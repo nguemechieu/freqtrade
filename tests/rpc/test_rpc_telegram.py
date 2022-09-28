@@ -103,7 +103,8 @@ def test_telegram_init(default_conf, mocker, caplog) -> None:
                    "['stats'], ['daily'], ['weekly'], ['monthly'], "
                    "['count'], ['locks'], ['unlock', 'delete_locks'], "
                    "['reload_config', 'reload_conf'], ['show_config', 'show_conf'], "
-                   "['stopbuy'], ['whitelist'], ['blacklist'], ['blacklist_delete', 'bl_delete'], "
+                   "['stopbuy', 'stopentry'], ['whitelist'], ['blacklist'], "
+                   "['blacklist_delete', 'bl_delete'], "
                    "['logs'], ['edge'], ['health'], ['help'], ['version']"
                    "]")
 
@@ -896,10 +897,10 @@ def test_stopbuy_handle(default_conf, update, mocker) -> None:
     telegram, freqtradebot, msg_mock = get_telegram_testobject(mocker, default_conf)
 
     assert freqtradebot.config['max_open_trades'] != 0
-    telegram._stopbuy(update=update, context=MagicMock())
+    telegram._stopentry(update=update, context=MagicMock())
     assert freqtradebot.config['max_open_trades'] == 0
     assert msg_mock.call_count == 1
-    assert 'No more buy will occur from now. Run /reload_config to reset.' \
+    assert 'No more entries will occur from now. Run /reload_config to reset.' \
         in msg_mock.call_args_list[0][0][0]
 
 
@@ -958,6 +959,7 @@ def test_telegram_forceexit_handle(default_conf, update, ticker, fee,
         'gain': 'profit',
         'leverage': 1.0,
         'limit': 1.173e-05,
+        'order_rate': 1.173e-05,
         'amount': 91.07468123,
         'order_type': 'limit',
         'open_rate': 1.098e-05,
@@ -1030,6 +1032,7 @@ def test_telegram_force_exit_down_handle(default_conf, update, ticker, fee,
         'gain': 'loss',
         'leverage': 1.0,
         'limit': 1.043e-05,
+        'order_rate': 1.043e-05,
         'amount': 91.07468123,
         'order_type': 'limit',
         'open_rate': 1.098e-05,
@@ -1091,6 +1094,7 @@ def test_forceexit_all_handle(default_conf, update, ticker, fee, mocker) -> None
         'pair': 'ETH/BTC',
         'gain': 'loss',
         'leverage': 1.0,
+        'order_rate': 1.099e-05,
         'limit': 1.099e-05,
         'amount': 91.07468123,
         'order_type': 'limit',
@@ -1458,6 +1462,27 @@ def test_whitelist_static(default_conf, update, mocker) -> None:
     assert ("Using whitelist `['StaticPairList']` with 4 pairs\n"
             "`ETH/BTC, LTC/BTC, XRP/BTC, NEO/BTC`" in msg_mock.call_args_list[0][0][0])
 
+    context = MagicMock()
+    context.args = ['sorted']
+    msg_mock.reset_mock()
+    telegram._whitelist(update=update, context=context)
+    assert ("Using whitelist `['StaticPairList']` with 4 pairs\n"
+            "`ETH/BTC, LTC/BTC, NEO/BTC, XRP/BTC`" in msg_mock.call_args_list[0][0][0])
+
+    context = MagicMock()
+    context.args = ['baseonly']
+    msg_mock.reset_mock()
+    telegram._whitelist(update=update, context=context)
+    assert ("Using whitelist `['StaticPairList']` with 4 pairs\n"
+            "`ETH, LTC, XRP, NEO`" in msg_mock.call_args_list[0][0][0])
+
+    context = MagicMock()
+    context.args = ['baseonly', 'sorted']
+    msg_mock.reset_mock()
+    telegram._whitelist(update=update, context=context)
+    assert ("Using whitelist `['StaticPairList']` with 4 pairs\n"
+            "`ETH, LTC, NEO, XRP`" in msg_mock.call_args_list[0][0][0])
+
 
 def test_whitelist_dynamic(default_conf, update, mocker) -> None:
     mocker.patch('freqtrade.exchange.Exchange.exchange_has', MagicMock(return_value=True))
@@ -1470,6 +1495,27 @@ def test_whitelist_dynamic(default_conf, update, mocker) -> None:
     assert msg_mock.call_count == 1
     assert ("Using whitelist `['VolumePairList']` with 4 pairs\n"
             "`ETH/BTC, LTC/BTC, XRP/BTC, NEO/BTC`" in msg_mock.call_args_list[0][0][0])
+
+    context = MagicMock()
+    context.args = ['sorted']
+    msg_mock.reset_mock()
+    telegram._whitelist(update=update, context=context)
+    assert ("Using whitelist `['VolumePairList']` with 4 pairs\n"
+            "`ETH/BTC, LTC/BTC, NEO/BTC, XRP/BTC`" in msg_mock.call_args_list[0][0][0])
+
+    context = MagicMock()
+    context.args = ['baseonly']
+    msg_mock.reset_mock()
+    telegram._whitelist(update=update, context=context)
+    assert ("Using whitelist `['VolumePairList']` with 4 pairs\n"
+            "`ETH, LTC, XRP, NEO`" in msg_mock.call_args_list[0][0][0])
+
+    context = MagicMock()
+    context.args = ['baseonly', 'sorted']
+    msg_mock.reset_mock()
+    telegram._whitelist(update=update, context=context)
+    assert ("Using whitelist `['VolumePairList']` with 4 pairs\n"
+            "`ETH, LTC, NEO, XRP`" in msg_mock.call_args_list[0][0][0])
 
 
 def test_blacklist_static(default_conf, update, mocker) -> None:
@@ -1701,7 +1747,7 @@ def test_send_msg_enter_notification(default_conf, mocker, caplog, message_type,
         'exchange': 'Binance',
         'pair': 'ETH/BTC',
         'leverage': leverage,
-        'limit': 1.099e-05,
+        'open_rate': 1.099e-05,
         'order_type': 'limit',
         'direction': enter,
         'stake_amount': 0.01465333,
@@ -1872,7 +1918,7 @@ def test_send_msg_sell_notification(default_conf, mocker) -> None:
         'leverage': 1.0,
         'direction': 'Long',
         'gain': 'loss',
-        'limit': 3.201e-05,
+        'order_rate': 3.201e-05,
         'amount': 1333.3333333333335,
         'order_type': 'market',
         'open_rate': 7.5e-05,
@@ -1907,7 +1953,7 @@ def test_send_msg_sell_notification(default_conf, mocker) -> None:
         'pair': 'KEY/ETH',
         'direction': 'Long',
         'gain': 'loss',
-        'limit': 3.201e-05,
+        'order_rate': 3.201e-05,
         'amount': 1333.3333333333335,
         'order_type': 'market',
         'open_rate': 7.5e-05,
@@ -1946,7 +1992,7 @@ def test_send_msg_sell_notification(default_conf, mocker) -> None:
         'pair': 'KEY/ETH',
         'direction': 'Long',
         'gain': 'loss',
-        'limit': 3.201e-05,
+        'order_rate': 3.201e-05,
         'amount': 1333.3333333333335,
         'order_type': 'market',
         'open_rate': 7.5e-05,
@@ -2095,11 +2141,11 @@ def test_send_msg_strategy_msg_notification(default_conf, mocker) -> None:
 
 
 def test_send_msg_unknown_type(default_conf, mocker) -> None:
-    telegram, _, _ = get_telegram_testobject(mocker, default_conf)
-    with pytest.raises(NotImplementedError, match=r'Unknown message type: None'):
-        telegram.send_msg({
-            'type': None,
-        })
+    telegram, _, msg_mock = get_telegram_testobject(mocker, default_conf)
+    telegram.send_msg({
+        'type': None,
+    })
+    msg_mock.call_count == 0
 
 
 @pytest.mark.parametrize('message_type,enter,enter_signal,leverage', [
@@ -2119,7 +2165,7 @@ def test_send_msg_buy_notification_no_fiat(
         'exchange': 'Binance',
         'pair': 'ETH/BTC',
         'leverage': leverage,
-        'limit': 1.099e-05,
+        'open_rate': 1.099e-05,
         'order_type': 'limit',
         'direction': enter,
         'stake_amount': 0.01465333,
@@ -2162,7 +2208,7 @@ def test_send_msg_sell_notification_no_fiat(
         'gain': 'loss',
         'leverage': leverage,
         'direction': direction,
-        'limit': 3.201e-05,
+        'order_rate': 3.201e-05,
         'amount': 1333.3333333333335,
         'order_type': 'limit',
         'open_rate': 7.5e-05,

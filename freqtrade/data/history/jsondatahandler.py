@@ -1,16 +1,14 @@
 import logging
-import re
-from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 from pandas import DataFrame, read_json, to_datetime
 
 from freqtrade import misc
 from freqtrade.configuration import TimeRange
-from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS, ListPairsWithTimeframes, TradeList
+from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS, TradeList
 from freqtrade.data.converter import trades_dict_to_list
-from freqtrade.enums import CandleType, TradingMode
+from freqtrade.enums import CandleType
 
 from .idatahandler import IDataHandler
 
@@ -22,48 +20,6 @@ class JsonDataHandler(IDataHandler):
 
     _use_zip = False
     _columns = DEFAULT_DATAFRAME_COLUMNS
-
-    @classmethod
-    def ohlcv_get_available_data(
-            cls, datadir: Path, trading_mode: TradingMode) -> ListPairsWithTimeframes:
-        """
-        Returns a list of all pairs with ohlcv data available in this datadir
-        :param datadir: Directory to search for ohlcv files
-        :param trading_mode: trading-mode to be used
-        :return: List of Tuples of (pair, timeframe)
-        """
-        if trading_mode == 'futures':
-            datadir = datadir.joinpath('futures')
-        _tmp = [
-            re.search(
-                cls._OHLCV_REGEX, p.name
-            ) for p in datadir.glob(f"*.{cls._get_file_extension()}")]
-        return [
-            (
-                cls.rebuild_pair_from_filename(match[1]),
-                cls.rebuild_timeframe_from_filename(match[2]),
-                CandleType.from_string(match[3])
-            ) for match in _tmp if match and len(match.groups()) > 1]
-
-    @classmethod
-    def ohlcv_get_pairs(cls, datadir: Path, timeframe: str, candle_type: CandleType) -> List[str]:
-        """
-        Returns a list of all pairs with ohlcv data available in this datadir
-        for the specified timeframe
-        :param datadir: Directory to search for ohlcv files
-        :param timeframe: Timeframe to search pairs for
-        :param candle_type: Any of the enum CandleType (must match trading mode!)
-        :return: List of Pairs
-        """
-        candle = ""
-        if candle_type != CandleType.SPOT:
-            datadir = datadir.joinpath('futures')
-            candle = f"-{candle_type}"
-
-        _tmp = [re.search(r'^(\S+)(?=\-' + timeframe + candle + '.json)', p.name)
-                for p in datadir.glob(f"*{timeframe}{candle}.{cls._get_file_extension()}")]
-        # Check if regex found something and only return these results
-        return [cls.rebuild_pair_from_filename(match[0]) for match in _tmp if match]
 
     def ohlcv_store(
             self, pair: str, timeframe: str, data: DataFrame, candle_type: CandleType) -> None:
@@ -140,18 +96,6 @@ class JsonDataHandler(IDataHandler):
         :param candle_type: Any of the enum CandleType (must match trading mode!)
         """
         raise NotImplementedError()
-
-    @classmethod
-    def trades_get_pairs(cls, datadir: Path) -> List[str]:
-        """
-        Returns a list of all pairs for which trade data is available in this
-        :param datadir: Directory to search for ohlcv files
-        :return: List of Pairs
-        """
-        _tmp = [re.search(r'^(\S+)(?=\-trades.json)', p.name)
-                for p in datadir.glob(f"*trades.{cls._get_file_extension()}")]
-        # Check if regex found something and only return these results to avoid exceptions.
-        return [cls.rebuild_pair_from_filename(match[0]) for match in _tmp if match]
 
     def trades_store(self, pair: str, data: TradeList) -> None:
         """

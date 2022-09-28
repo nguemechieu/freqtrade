@@ -525,12 +525,14 @@ Requires a configuration with specified `pairlists` attribute.
 Can be used to generate static pairlists to be used during backtesting / hyperopt.
 
 ```
-usage: freqtrade test-pairlist [-h] [-v] [-c PATH]
+usage: freqtrade test-pairlist [-h] [--userdir PATH] [-v] [-c PATH]
                                [--quote QUOTE_CURRENCY [QUOTE_CURRENCY ...]]
                                [-1] [--print-json] [--exchange EXCHANGE]
 
 optional arguments:
   -h, --help            show this help message and exit
+  --userdir PATH, --user-data-dir PATH
+                        Path to userdata directory.
   -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
   -c PATH, --config PATH
                         Specify configuration file (default:
@@ -610,6 +612,26 @@ Common arguments:
                         Path to userdata directory.
 
 ```
+
+### Webserver mode - docker
+
+You can also use webserver mode via docker.
+Starting a one-off container requires the configuration of the port explicitly, as ports are not exposed by default.
+You can use `docker-compose run --rm -p 127.0.0.1:8080:8080 freqtrade webserver` to start a one-off container that'll be removed once you stop it. This assumes that port 8080 is still available and no other bot is running on that port.
+
+Alternatively, you can reconfigure the docker-compose file to have the command updated:
+
+``` yml
+    command: >
+      webserver
+      --config /freqtrade/user_data/config.json
+```
+
+You can now use `docker-compose up` to start the webserver.
+This assumes that the configuration has a webserver enabled and configured for docker (listening port = `0.0.0.0`).
+
+!!! Tip
+    Don't forget to reset the command back to the trade command if you want to start a live or dry-run bot. 
 
 ## Show previous Backtest results
 

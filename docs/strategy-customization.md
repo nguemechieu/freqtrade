@@ -166,7 +166,7 @@ Additional technical libraries can be installed as necessary, or custom indicato
 
 Most indicators have an instable startup period, in which they are either not available (NaN), or the calculation is incorrect. This can lead to inconsistencies, since Freqtrade does not know how long this instable period should be.
 To account for this, the strategy can be assigned the `startup_candle_count` attribute.
-This should be set to the maximum number of candles that the strategy requires to calculate stable indicators.
+This should be set to the maximum number of candles that the strategy requires to calculate stable indicators. In the case where a user includes higher timeframes with informative pairs, the `startup_candle_count` does not necessarily change. The value is the maximum period (in candles) that any of the informatives timeframes need to compute stable indicators.
 
 In this example strategy, this should be set to 100 (`startup_candle_count = 100`), since the longest needed history is 100 candles.
 
@@ -264,7 +264,8 @@ def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFram
 ### Exit signal rules
 
 Edit the method `populate_exit_trend()` into your strategy file to update your exit strategy.
-Please note that the exit-signal is only used if `use_exit_signal` is set to true in the configuration.
+The exit-signal is only used for exits if `use_exit_signal` is set to true in the configuration.
+`use_exit_signal` will not influence [signal collision rules](#colliding-signals) - which will still apply and can prevent entries.
 
 It's important to always return the dataframe without removing/modifying the columns `"open", "high", "low", "close", "volume"`, otherwise these fields would contain something unexpected.
 
@@ -617,9 +618,8 @@ Please always check the mode of operation to select the correct method to get da
 ### *available_pairs*
 
 ``` python
-if self.dp:
-    for pair, timeframe in self.dp.available_pairs:
-        print(f"available {pair}, {timeframe}")
+for pair, timeframe in self.dp.available_pairs:
+    print(f"available {pair}, {timeframe}")
 ```
 
 ### *current_whitelist()*
@@ -630,7 +630,7 @@ The strategy might look something like this:
 
 *Scan through the top 10 pairs by volume using the `VolumePairList` every 5 minutes and use a 14 day RSI to buy and sell.*
 
-Due to the limited available data, it's very difficult to resample `5m` candles into daily candles for use in a 14 day RSI. Most exchanges limit us to just 500 candles which effectively gives us around 1.74 daily candles. We need 14 days at least!
+Due to the limited available data, it's very difficult to resample `5m` candles into daily candles for use in a 14 day RSI. Most exchanges limit us to just 500-1000 candles which effectively gives us around 1.74 daily candles. We need 14 days at least!
 
 Since we can't resample the data we will have to use an informative pair; and since the whitelist will be dynamic we don't know which pair(s) to use.
 
@@ -653,10 +653,9 @@ This is where calling `self.dp.current_whitelist()` comes in handy.
 
 ``` python
 # fetch live / historical candle (OHLCV) data for the first informative pair
-if self.dp:
-    inf_pair, inf_timeframe = self.informative_pairs()[0]
-    informative = self.dp.get_pair_dataframe(pair=inf_pair,
-                                             timeframe=inf_timeframe)
+inf_pair, inf_timeframe = self.informative_pairs()[0]
+informative = self.dp.get_pair_dataframe(pair=inf_pair,
+                                            timeframe=inf_timeframe)
 ```
 
 !!! Warning "Warning about backtesting"
@@ -671,10 +670,9 @@ It can also be used in specific callbacks to get the signal that caused the acti
 
 ``` python
 # fetch current dataframe
-if self.dp:
-    if self.dp.runmode.value in ('live', 'dry_run'):
-        dataframe, last_updated = self.dp.get_analyzed_dataframe(pair=metadata['pair'],
-                                                                 timeframe=self.timeframe)
+if self.dp.runmode.value in ('live', 'dry_run'):
+    dataframe, last_updated = self.dp.get_analyzed_dataframe(pair=metadata['pair'],
+                                                                timeframe=self.timeframe)
 ```
 
 !!! Note "No data available"
@@ -684,11 +682,10 @@ if self.dp:
 ### *orderbook(pair, maximum)*
 
 ``` python
-if self.dp:
-    if self.dp.runmode.value in ('live', 'dry_run'):
-        ob = self.dp.orderbook(metadata['pair'], 1)
-        dataframe['best_bid'] = ob['bids'][0][0]
-        dataframe['best_ask'] = ob['asks'][0][0]
+if self.dp.runmode.value in ('live', 'dry_run'):
+    ob = self.dp.orderbook(metadata['pair'], 1)
+    dataframe['best_bid'] = ob['bids'][0][0]
+    dataframe['best_ask'] = ob['asks'][0][0]
 ```
 
 The orderbook structure is aligned with the order structure from [ccxt](https://github.com/ccxt/ccxt/wiki/Manual#order-book-structure), so the result will look as follows:
@@ -717,12 +714,11 @@ Therefore, using `ob['bids'][0][0]` as demonstrated above will result in using t
 ### *ticker(pair)*
 
 ``` python
-if self.dp:
-    if self.dp.runmode.value in ('live', 'dry_run'):
-        ticker = self.dp.ticker(metadata['pair'])
-        dataframe['last_price'] = ticker['last']
-        dataframe['volume24h'] = ticker['quoteVolume']
-        dataframe['vwap'] = ticker['vwap']
+if self.dp.runmode.value in ('live', 'dry_run'):
+    ticker = self.dp.ticker(metadata['pair'])
+    dataframe['last_price'] = ticker['last']
+    dataframe['volume24h'] = ticker['quoteVolume']
+    dataframe['vwap'] = ticker['vwap']
 ```
 
 !!! Warning
@@ -732,7 +728,7 @@ if self.dp:
     data returned from the exchange and add appropriate error handling / defaults.
 
 !!! Warning "Warning about backtesting"
-    This method will always return up-to-date values - so usage during backtesting / hyperopt will lead to wrong results.
+    This method will always return up-to-date values - so usage during backtesting / hyperopt without runmode checks will lead to wrong results.
 
 ### Send Notification
 
@@ -828,6 +824,8 @@ Options:
 - Rename the columns for you to create unique columns
 - Merge the dataframe without lookahead bias
 - Forward-fill (optional)
+
+For a full sample, please refer to the [complete data provider example](#complete-data-provider-sample) below.
 
 All columns of the informative dataframe will be available on the returning dataframe in a renamed fashion:
 

@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Type
+from typing import List, Optional, Tuple, Type
 
 from pandas import DataFrame
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class IDataHandler(ABC):
 
-    _OHLCV_REGEX = r'^([a-zA-Z_-]+)\-(\d+[a-zA-Z]{1,2})\-?([a-zA-Z_]*)?(?=\.)'
+    _OHLCV_REGEX = r'^([a-zA-Z_\d-]+)\-(\d+[a-zA-Z]{1,2})\-?([a-zA-Z_]*)?(?=\.)'
 
     def __init__(self, datadir: Path) -> None:
         self._datadir = datadir
@@ -39,18 +39,28 @@ class IDataHandler(ABC):
         raise NotImplementedError()
 
     @classmethod
-    @abstractmethod
     def ohlcv_get_available_data(
             cls, datadir: Path, trading_mode: TradingMode) -> ListPairsWithTimeframes:
         """
         Returns a list of all pairs with ohlcv data available in this datadir
         :param datadir: Directory to search for ohlcv files
         :param trading_mode: trading-mode to be used
-        :return: List of Tuples of (pair, timeframe)
+        :return: List of Tuples of (pair, timeframe, CandleType)
         """
+        if trading_mode == TradingMode.FUTURES:
+            datadir = datadir.joinpath('futures')
+        _tmp = [
+            re.search(
+                cls._OHLCV_REGEX, p.name
+            ) for p in datadir.glob(f"*.{cls._get_file_extension()}")]
+        return [
+            (
+                cls.rebuild_pair_from_filename(match[1]),
+                cls.rebuild_timeframe_from_filename(match[2]),
+                CandleType.from_string(match[3])
+            ) for match in _tmp if match and len(match.groups()) > 1]
 
     @classmethod
-    @abstractmethod
     def ohlcv_get_pairs(cls, datadir: Path, timeframe: str, candle_type: CandleType) -> List[str]:
         """
         Returns a list of all pairs with ohlcv data available in this datadir
@@ -60,6 +70,15 @@ class IDataHandler(ABC):
         :param candle_type: Any of the enum CandleType (must match trading mode!)
         :return: List of Pairs
         """
+        candle = ""
+        if candle_type != CandleType.SPOT:
+            datadir = datadir.joinpath('futures')
+            candle = f"-{candle_type}"
+        ext = cls._get_file_extension()
+        _tmp = [re.search(r'^(\S+)(?=\-' + timeframe + candle + f'.{ext})', p.name)
+                for p in datadir.glob(f"*{timeframe}{candle}.{ext}")]
+        # Check if regex found something and only return these results
+        return [cls.rebuild_pair_from_filename(match[0]) for match in _tmp if match]
 
     @abstractmethod
     def ohlcv_store(
@@ -72,6 +91,18 @@ class IDataHandler(ABC):
         :param candle_type: Any of the enum CandleType (must match trading mode!)
         :return: None
         """
+
+    def ohlcv_data_min_max(self, pair: str, timeframe: str,
+                           candle_type: CandleType) -> Tuple[datetime, datetime]:
+        """
+        Returns the min and max timestamp for the given pair and timeframe.
+        :param pair: Pair to get min/max for
+        :param timeframe: Timeframe to get min/max for
+        :param candle_type: Any of the enum CandleType (must match trading mode!)
+        :return: (min, max)
+        """
+        data = self._ohlcv_load(pair, timeframe, None, candle_type)
+        return data.iloc[0]['date'].to_pydatetime(), data.iloc[-1]['date'].to_pydatetime()
 
     @abstractmethod
     def _ohlcv_load(self, pair: str, timeframe: str, timerange: Optional[TimeRange],
@@ -121,13 +152,17 @@ class IDataHandler(ABC):
         """
 
     @classmethod
-    @abstractmethod
     def trades_get_pairs(cls, datadir: Path) -> List[str]:
         """
         Returns a list of all pairs for which trade data is available in this
         :param datadir: Directory to search for ohlcv files
         :return: List of Pairs
         """
+        _ext = cls._get_file_extension()
+        _tmp = [re.search(r'^(\S+)(?=\-trades.' + _ext + ')', p.name)
+                for p in datadir.glob(f"*trades.{_ext}")]
+        # Check if regex found something and only return these results to avoid exceptions.
+        return [cls.rebuild_pair_from_filename(match[0]) for match in _tmp if match]
 
     @abstractmethod
     def trades_store(self, pair: str, data: TradeList) -> None:
@@ -232,12 +267,12 @@ class IDataHandler(ABC):
         Rebuild pair name from filename
         Assumes a asset name of max. 7 length to also support BTC-PERP and BTC-PERP:USD names.
         """
-        res = re.sub(r'^(([A-Za-z]{1,10})|^([A-Za-z\-]{1,6}))(_)', r'\g<1>/', pair, 1)
+        res = re.sub(r'^(([A-Za-z\d]{1,10})|^([A-Za-z\-]{1,6}))(_)', r'\g<1>/', pair, 1)
         res = re.sub('_', ':', res, 1)
         return res
 
     def ohlcv_load(self, pair, timeframe: str,
-                   candle_type: CandleType,
+                   candle_type: CandleType, *,
                    timerange: Optional[TimeRange] = None,
                    fill_missing: bool = True,
                    drop_incomplete: bool = True,
@@ -340,6 +375,12 @@ def get_datahandlerclass(datatype: str) -> Type[IDataHandler]:
     elif datatype == 'hdf5':
         from .hdf5datahandler import HDF5DataHandler
         return HDF5DataHandler
+    elif datatype == 'feather':
+        from .featherdatahandler import FeatherDataHandler
+        return FeatherDataHandler
+    elif datatype == 'parquet':
+        from .parquetdatahandler import ParquetDataHandler
+        return ParquetDataHandler
     else:
         raise ValueError(f"No datahandler for datatype {datatype} available.")
 
