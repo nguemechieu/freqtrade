@@ -57,3 +57,4 @@ schedule==1.1.0
 #WS Messages
 websockets==10.4
 janus==1.0.0
+setuptools>=65.5.1 # not directly required, pinned by Snyk to avoid a vulnerability
