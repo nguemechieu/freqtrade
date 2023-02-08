@@ -8,15 +8,19 @@ suitable to run with freqtrade.
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Tuple
 
 import pytest
 
+from freqtrade.constants import Config
 from freqtrade.enums import CandleType
 from freqtrade.exchange import timeframe_to_minutes, timeframe_to_prev_date
-from freqtrade.exchange.exchange import timeframe_to_msecs
+from freqtrade.exchange.exchange import Exchange, timeframe_to_msecs
 from freqtrade.resolvers.exchange_resolver import ExchangeResolver
 from tests.conftest import get_default_conf_usdt
 
+
+EXCHANGE_FIXTURE_TYPE = Tuple[Exchange, str]
 
 # Exchanges that should be tested
 EXCHANGES = {
@@ -31,11 +35,57 @@ EXCHANGES = {
     'binance': {
         'pair': 'BTC/USDT',
         'stake_currency': 'USDT',
+        'use_ci_proxy': True,
         'hasQuoteVolume': True,
         'timeframe': '5m',
         'futures': True,
+        'futures_pair': 'BTC/USDT:USDT',
+        'hasQuoteVolumeFutures': True,
         'leverage_tiers_public': False,
         'leverage_in_spot_market': False,
+        'sample_order': [{
+            "symbol": "SOLUSDT",
+            "orderId": 3551312894,
+            "orderListId": -1,
+            "clientOrderId": "x-R4DD3S8297c73a11ccb9dc8f2811ba",
+            "transactTime": 1674493798550,
+            "price": "15.50000000",
+            "origQty": "1.10000000",
+            "executedQty": "0.00000000",
+            "cummulativeQuoteQty": "0.00000000",
+            "status": "NEW",
+            "timeInForce": "GTC",
+            "type": "LIMIT",
+            "side": "BUY",
+            "workingTime": 1674493798550,
+            "fills": [],
+            "selfTradePreventionMode": "NONE",
+        }]
+    },
+    'binanceus': {
+        'pair': 'BTC/USDT',
+        'stake_currency': 'USDT',
+        'hasQuoteVolume': True,
+        'timeframe': '5m',
+        'futures': False,
+        'sample_order': [{
+            "symbol": "SOLUSDT",
+            "orderId": 3551312894,
+            "orderListId": -1,
+            "clientOrderId": "x-R4DD3S8297c73a11ccb9dc8f2811ba",
+            "transactTime": 1674493798550,
+            "price": "15.50000000",
+            "origQty": "1.10000000",
+            "executedQty": "0.00000000",
+            "cummulativeQuoteQty": "0.00000000",
+            "status": "NEW",
+            "timeInForce": "GTC",
+            "type": "LIMIT",
+            "side": "BUY",
+            "workingTime": 1674493798550,
+            "fills": [],
+            "selfTradePreventionMode": "NONE",
+        }]
     },
     'kraken': {
         'pair': 'BTC/USDT',
@@ -45,23 +95,47 @@ EXCHANGES = {
         'leverage_tiers_public': False,
         'leverage_in_spot_market': True,
     },
-    'ftx': {
-        'pair': 'BTC/USD',
-        'stake_currency': 'USD',
-        'hasQuoteVolume': True,
-        'timeframe': '5m',
-        'futures_pair': 'BTC/USD:USD',
-        'futures': False,
-        'leverage_tiers_public': False,  # TODO: Set to True once implemented on CCXT
-        'leverage_in_spot_market': True,
-    },
     'kucoin': {
-        'pair': 'BTC/USDT',
+        'pair': 'XRP/USDT',
         'stake_currency': 'USDT',
         'hasQuoteVolume': True,
         'timeframe': '5m',
         'leverage_tiers_public': False,
         'leverage_in_spot_market': True,
+        'sample_order': [
+            {'id': '63d6742d0adc5570001d2bbf7'},  # create order
+            {
+                'id': '63d6742d0adc5570001d2bbf7',
+                'symbol': 'SOL-USDT',
+                'opType': 'DEAL',
+                'type': 'limit',
+                'side': 'buy',
+                'price': '15.5',
+                'size': '1.1',
+                'funds': '0',
+                'dealFunds': '0.032626',
+                'dealSize': '0.1',
+                'fee': '0.000065252',
+                'feeCurrency': 'USDT',
+                'stp': '',
+                'stop': '',
+                'stopTriggered': False,
+                'stopPrice': '0',
+                'timeInForce': 'GTC',
+                'postOnly': False,
+                'hidden': False,
+                'iceberg': False,
+                'visibleSize': '0',
+                'cancelAfter': 0,
+                'channel': 'API',
+                'clientOid': '0a053870-11bf-41e5-be61-b272a4cb62e1',
+                'remark': None,
+                'tags': 'partner:ccxt',
+                'isActive': False,
+                'cancelExist': False,
+                'createdAt': 1674493798550,
+                'tradeType': 'TRADE'
+            }],
     },
     'gateio': {
         'pair': 'BTC/USDT',
@@ -70,6 +144,7 @@ EXCHANGES = {
         'timeframe': '5m',
         'futures': True,
         'futures_pair': 'BTC/USDT:USDT',
+        'hasQuoteVolumeFutures': True,
         'leverage_tiers_public': True,
         'leverage_in_spot_market': True,
     },
@@ -78,14 +153,42 @@ EXCHANGES = {
         'stake_currency': 'USDT',
         'hasQuoteVolume': True,
         'timeframe': '5m',
+        'futures': True,
+        'futures_pair': 'BTC/USDT:USDT',
+        'hasQuoteVolumeFutures': False,
+        'leverage_tiers_public': True,
+        'leverage_in_spot_market': True,
+    },
+    'bybit': {
+        'pair': 'BTC/USDT',
+        'stake_currency': 'USDT',
+        'hasQuoteVolume': True,
+        'timeframe': '5m',
         'futures_pair': 'BTC/USDT:USDT',
         'futures': True,
         'leverage_tiers_public': True,
         'leverage_in_spot_market': True,
+        'sample_order': [
+            {
+                "orderId": "1274754916287346280",
+                "orderLinkId": "1666798627015730",
+                "symbol": "SOLUSDT",
+                "createTime": "1674493798550",
+                "orderPrice": "15.5",
+                "orderQty": "1.1",
+                "orderType": "LIMIT",
+                "side": "BUY",
+                "status": "NEW",
+                "timeInForce": "GTC",
+                "accountId": "5555555",
+                "execQty": "0",
+                "orderCategory": "0"
+            }
+        ]
     },
     'huobi': {
-        'pair': 'BTC/USDT',
-        'stake_currency': 'USDT',
+        'pair': 'ETH/BTC',
+        'stake_currency': 'BTC',
         'hasQuoteVolume': True,
         'timeframe': '5m',
         'futures': False,
@@ -113,8 +216,27 @@ def exchange_conf():
     return config
 
 
+def set_test_proxy(config: Config, use_proxy: bool) -> Config:
+    # Set proxy to test in CI.
+    import os
+    if use_proxy and (proxy := os.environ.get('CI_WEB_PROXY')):
+        config1 = deepcopy(config)
+        config1['exchange']['ccxt_config'] = {
+            "aiohttp_proxy": proxy,
+            'proxies': {
+                'https': proxy,
+                'http': proxy,
+            }
+        }
+        return config1
+
+    return config
+
+
 @pytest.fixture(params=EXCHANGES, scope="class")
 def exchange(request, exchange_conf):
+    exchange_conf = set_test_proxy(
+        exchange_conf, EXCHANGES[request.param].get('use_ci_proxy', False))
     exchange_conf['exchange']['name'] = request.param
     exchange_conf['stake_currency'] = EXCHANGES[request.param]['stake_currency']
     exchange = ExchangeResolver.load_exchange(request.param, exchange_conf, validate=True)
@@ -127,6 +249,8 @@ def exchange_futures(request, exchange_conf, class_mocker):
     if not EXCHANGES[request.param].get('futures') is True:
         yield None, request.param
     else:
+        exchange_conf = set_test_proxy(
+            exchange_conf, EXCHANGES[request.param].get('use_ci_proxy', False))
         exchange_conf = deepcopy(exchange_conf)
         exchange_conf['exchange']['name'] = request.param
         exchange_conf['trading_mode'] = 'futures'
@@ -137,6 +261,8 @@ def exchange_futures(request, exchange_conf, class_mocker):
             'freqtrade.exchange.binance.Binance.fill_leverage_tiers')
         class_mocker.patch('freqtrade.exchange.exchange.Exchange.fetch_trading_fees')
         class_mocker.patch('freqtrade.exchange.okx.Okx.additional_exchange_init')
+        class_mocker.patch('freqtrade.exchange.binance.Binance.additional_exchange_init')
+        class_mocker.patch('freqtrade.exchange.bybit.Bybit.additional_exchange_init')
         class_mocker.patch('freqtrade.exchange.exchange.Exchange.load_cached_leverage_tiers',
                            return_value=None)
         class_mocker.patch('freqtrade.exchange.exchange.Exchange.cache_leverage_tiers')
@@ -150,19 +276,19 @@ def exchange_futures(request, exchange_conf, class_mocker):
 @pytest.mark.longrun
 class TestCCXTExchange():
 
-    def test_load_markets(self, exchange):
-        exchange, exchangename = exchange
+    def test_load_markets(self, exchange: EXCHANGE_FIXTURE_TYPE):
+        exch, exchangename = exchange
         pair = EXCHANGES[exchangename]['pair']
-        markets = exchange.markets
+        markets = exch.markets
         assert pair in markets
         assert isinstance(markets[pair], dict)
-        assert exchange.market_is_spot(markets[pair])
+        assert exch.market_is_spot(markets[pair])
 
-    def test_has_validations(self, exchange):
+    def test_has_validations(self, exchange: EXCHANGE_FIXTURE_TYPE):
 
-        exchange, exchangename = exchange
+        exch, exchangename = exchange
 
-        exchange.validate_ordertypes({
+        exch.validate_ordertypes({
             'entry': 'limit',
             'exit': 'limit',
             'stoploss': 'limit',
@@ -171,13 +297,13 @@ class TestCCXTExchange():
         if exchangename == 'gateio':
             # gateio doesn't have market orders on spot
             return
-        exchange.validate_ordertypes({
+        exch.validate_ordertypes({
             'entry': 'market',
             'exit': 'market',
             'stoploss': 'market',
             })
 
-    def test_load_markets_futures(self, exchange_futures):
+    def test_load_markets_futures(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         exchange, exchangename = exchange_futures
         if not exchange:
             # exchange_futures only returns values for supported exchanges
@@ -190,11 +316,34 @@ class TestCCXTExchange():
 
         assert exchange.market_is_future(markets[pair])
 
-    def test_ccxt_fetch_tickers(self, exchange):
-        exchange, exchangename = exchange
+    def test_ccxt_order_parse(self, exchange: EXCHANGE_FIXTURE_TYPE):
+        exch, exchange_name = exchange
+        if orders := EXCHANGES[exchange_name].get('sample_order'):
+            for order in orders:
+                po = exch._api.parse_order(order)
+                assert isinstance(po['id'], str)
+                assert po['id'] is not None
+                if len(order.keys()) < 5:
+                    # Kucoin case
+                    assert po['status'] == 'closed'
+                    continue
+                assert po['timestamp'] == 1674493798550
+                assert isinstance(po['datetime'], str)
+                assert isinstance(po['timestamp'], int)
+                assert isinstance(po['price'], float)
+                assert po['price'] == 15.5
+                assert po['symbol'] == 'SOL/USDT'
+                assert isinstance(po['amount'], float)
+                assert po['amount'] == 1.1
+                assert isinstance(po['status'], str)
+        else:
+            pytest.skip(f"No sample order available for exchange {exchange_name}")
+
+    def test_ccxt_fetch_tickers(self, exchange: EXCHANGE_FIXTURE_TYPE):
+        exch, exchangename = exchange
         pair = EXCHANGES[exchangename]['pair']
 
-        tickers = exchange.get_tickers()
+        tickers = exch.get_tickers()
         assert pair in tickers
         assert 'ask' in tickers[pair]
         assert tickers[pair]['ask'] is not None
@@ -204,11 +353,30 @@ class TestCCXTExchange():
         if EXCHANGES[exchangename].get('hasQuoteVolume'):
             assert tickers[pair]['quoteVolume'] is not None
 
-    def test_ccxt_fetch_ticker(self, exchange):
-        exchange, exchangename = exchange
+    def test_ccxt_fetch_tickers_futures(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
+        exch, exchangename = exchange_futures
+        if not exch or exchangename in ('gateio'):
+            # exchange_futures only returns values for supported exchanges
+            return
+
+        pair = EXCHANGES[exchangename]['pair']
+        pair = EXCHANGES[exchangename].get('futures_pair', pair)
+
+        tickers = exch.get_tickers()
+        assert pair in tickers
+        assert 'ask' in tickers[pair]
+        assert tickers[pair]['ask'] is not None
+        assert 'bid' in tickers[pair]
+        assert tickers[pair]['bid'] is not None
+        assert 'quoteVolume' in tickers[pair]
+        if EXCHANGES[exchangename].get('hasQuoteVolumeFutures'):
+            assert tickers[pair]['quoteVolume'] is not None
+
+    def test_ccxt_fetch_ticker(self, exchange: EXCHANGE_FIXTURE_TYPE):
+        exch, exchangename = exchange
         pair = EXCHANGES[exchangename]['pair']
 
-        ticker = exchange.fetch_ticker(pair)
+        ticker = exch.fetch_ticker(pair)
         assert 'ask' in ticker
         assert ticker['ask'] is not None
         assert 'bid' in ticker
@@ -217,26 +385,31 @@ class TestCCXTExchange():
         if EXCHANGES[exchangename].get('hasQuoteVolume'):
             assert ticker['quoteVolume'] is not None
 
-    def test_ccxt_fetch_l2_orderbook(self, exchange):
-        exchange, exchangename = exchange
+    def test_ccxt_fetch_l2_orderbook(self, exchange: EXCHANGE_FIXTURE_TYPE):
+        exch, exchangename = exchange
         pair = EXCHANGES[exchangename]['pair']
-        l2 = exchange.fetch_l2_order_book(pair)
+        l2 = exch.fetch_l2_order_book(pair)
         assert 'asks' in l2
         assert 'bids' in l2
         assert len(l2['asks']) >= 1
         assert len(l2['bids']) >= 1
-        l2_limit_range = exchange._ft_has['l2_limit_range']
-        l2_limit_range_required = exchange._ft_has['l2_limit_range_required']
+        l2_limit_range = exch._ft_has['l2_limit_range']
+        l2_limit_range_required = exch._ft_has['l2_limit_range_required']
         if exchangename == 'gateio':
             # TODO: Gateio is unstable here at the moment, ignoring the limit partially.
             return
         for val in [1, 2, 5, 25, 100]:
-            l2 = exchange.fetch_l2_order_book(pair, val)
+            l2 = exch.fetch_l2_order_book(pair, val)
             if not l2_limit_range or val in l2_limit_range:
-                assert len(l2['asks']) == val
-                assert len(l2['bids']) == val
+                if val > 50:
+                    # Orderbooks are not always this deep.
+                    assert val - 5 < len(l2['asks']) <= val
+                    assert val - 5 < len(l2['bids']) <= val
+                else:
+                    assert len(l2['asks']) == val
+                    assert len(l2['bids']) == val
             else:
-                next_limit = exchange.get_next_limit_in_list(
+                next_limit = exch.get_next_limit_in_list(
                     val, l2_limit_range, l2_limit_range_required)
                 if next_limit is None:
                     assert len(l2['asks']) > 100
@@ -249,27 +422,26 @@ class TestCCXTExchange():
                     assert len(l2['asks']) == next_limit
                     assert len(l2['asks']) == next_limit
 
-    def test_ccxt_fetch_ohlcv(self, exchange):
-        exchange, exchangename = exchange
+    def test_ccxt_fetch_ohlcv(self, exchange: EXCHANGE_FIXTURE_TYPE):
+        exch, exchangename = exchange
         pair = EXCHANGES[exchangename]['pair']
         timeframe = EXCHANGES[exchangename]['timeframe']
 
         pair_tf = (pair, timeframe, CandleType.SPOT)
 
-        ohlcv = exchange.refresh_latest_ohlcv([pair_tf])
+        ohlcv = exch.refresh_latest_ohlcv([pair_tf])
         assert isinstance(ohlcv, dict)
-        assert len(ohlcv[pair_tf]) == len(exchange.klines(pair_tf))
-        # assert len(exchange.klines(pair_tf)) > 200
+        assert len(ohlcv[pair_tf]) == len(exch.klines(pair_tf))
+        # assert len(exch.klines(pair_tf)) > 200
         # Assume 90% uptime ...
-        assert len(exchange.klines(pair_tf)) > exchange.ohlcv_candle_limit(
+        assert len(exch.klines(pair_tf)) > exch.ohlcv_candle_limit(
             timeframe, CandleType.SPOT) * 0.90
         # Check if last-timeframe is within the last 2 intervals
         now = datetime.now(timezone.utc) - timedelta(minutes=(timeframe_to_minutes(timeframe) * 2))
-        assert exchange.klines(pair_tf).iloc[-1]['date'] >= timeframe_to_prev_date(timeframe, now)
+        assert exch.klines(pair_tf).iloc[-1]['date'] >= timeframe_to_prev_date(timeframe, now)
 
-    def ccxt__async_get_candle_history(self, exchange, exchangename, pair, timeframe):
+    def ccxt__async_get_candle_history(self, exchange, exchangename, pair, timeframe, candle_type):
 
-        candle_type = CandleType.SPOT
         timeframe_ms = timeframe_to_msecs(timeframe)
         now = timeframe_to_prev_date(
                 timeframe, datetime.now(timezone.utc))
@@ -294,25 +466,31 @@ class TestCCXTExchange():
             assert len(candles) >= min(candle_count, candle_count1)
             assert candles[0][0] == since_ms or (since_ms + timeframe_ms)
 
-    def test_ccxt__async_get_candle_history(self, exchange):
-        exchange, exchangename = exchange
-        # For some weired reason, this test returns random lengths for bittrex.
-        if not exchange._ft_has['ohlcv_has_history'] or exchangename in ('bittrex'):
-            return
+    def test_ccxt__async_get_candle_history(self, exchange: EXCHANGE_FIXTURE_TYPE):
+        exc, exchangename = exchange
+        if exchangename in ('binanceus', 'bittrex'):
+            # TODO: reenable binanceus test once downtime "ages out" (2023-02-06)
+            # For some weired reason, this test returns random lengths for bittrex.
+            pytest.skip("Exchange doesn't provide stable ohlcv history")
+
+        if not exc._ft_has['ohlcv_has_history']:
+            pytest.skip("Exchange does not support candle history")
         pair = EXCHANGES[exchangename]['pair']
         timeframe = EXCHANGES[exchangename]['timeframe']
-        self.ccxt__async_get_candle_history(exchange, exchangename, pair, timeframe)
+        self.ccxt__async_get_candle_history(
+            exc, exchangename, pair, timeframe, CandleType.SPOT)
 
-    def test_ccxt__async_get_candle_history_futures(self, exchange_futures):
+    def test_ccxt__async_get_candle_history_futures(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         exchange, exchangename = exchange_futures
         if not exchange:
             # exchange_futures only returns values for supported exchanges
             return
         pair = EXCHANGES[exchangename].get('futures_pair', EXCHANGES[exchangename]['pair'])
         timeframe = EXCHANGES[exchangename]['timeframe']
-        self.ccxt__async_get_candle_history(exchange, exchangename, pair, timeframe)
+        self.ccxt__async_get_candle_history(
+            exchange, exchangename, pair, timeframe, CandleType.FUTURES)
 
-    def test_ccxt_fetch_funding_rate_history(self, exchange_futures):
+    def test_ccxt_fetch_funding_rate_history(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         exchange, exchangename = exchange_futures
         if not exchange:
             # exchange_futures only returns values for supported exchanges
@@ -350,7 +528,7 @@ class TestCCXTExchange():
             (rate['open'].min() != rate['open'].max())
         )
 
-    def test_ccxt_fetch_mark_price_history(self, exchange_futures):
+    def test_ccxt_fetch_mark_price_history(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         exchange, exchangename = exchange_futures
         if not exchange:
             # exchange_futures only returns values for supported exchanges
@@ -374,7 +552,7 @@ class TestCCXTExchange():
         assert mark_candles[mark_candles['date'] == prev_hour].iloc[0]['open'] != 0.0
         assert mark_candles[mark_candles['date'] == this_hour].iloc[0]['open'] != 0.0
 
-    def test_ccxt__calculate_funding_fees(self, exchange_futures):
+    def test_ccxt__calculate_funding_fees(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         exchange, exchangename = exchange_futures
         if not exchange:
             # exchange_futures only returns values for supported exchanges
@@ -390,16 +568,16 @@ class TestCCXTExchange():
 
     # TODO: tests fetch_trades (?)
 
-    def test_ccxt_get_fee(self, exchange):
-        exchange, exchangename = exchange
+    def test_ccxt_get_fee(self, exchange: EXCHANGE_FIXTURE_TYPE):
+        exch, exchangename = exchange
         pair = EXCHANGES[exchangename]['pair']
         threshold = 0.01
-        assert 0 < exchange.get_fee(pair, 'limit', 'buy') < threshold
-        assert 0 < exchange.get_fee(pair, 'limit', 'sell') < threshold
-        assert 0 < exchange.get_fee(pair, 'market', 'buy') < threshold
-        assert 0 < exchange.get_fee(pair, 'market', 'sell') < threshold
+        assert 0 < exch.get_fee(pair, 'limit', 'buy') < threshold
+        assert 0 < exch.get_fee(pair, 'limit', 'sell') < threshold
+        assert 0 < exch.get_fee(pair, 'market', 'buy') < threshold
+        assert 0 < exch.get_fee(pair, 'market', 'sell') < threshold
 
-    def test_ccxt_get_max_leverage_spot(self, exchange):
+    def test_ccxt_get_max_leverage_spot(self, exchange: EXCHANGE_FIXTURE_TYPE):
         spot, spot_name = exchange
         if spot:
             leverage_in_market_spot = EXCHANGES[spot_name].get('leverage_in_spot_market')
@@ -409,7 +587,7 @@ class TestCCXTExchange():
                 assert (isinstance(spot_leverage, float) or isinstance(spot_leverage, int))
                 assert spot_leverage >= 1.0
 
-    def test_ccxt_get_max_leverage_futures(self, exchange_futures):
+    def test_ccxt_get_max_leverage_futures(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         futures, futures_name = exchange_futures
         if futures:
             leverage_tiers_public = EXCHANGES[futures_name].get('leverage_tiers_public')
@@ -422,7 +600,7 @@ class TestCCXTExchange():
                 assert (isinstance(futures_leverage, float) or isinstance(futures_leverage, int))
                 assert futures_leverage >= 1.0
 
-    def test_ccxt_get_contract_size(self, exchange_futures):
+    def test_ccxt_get_contract_size(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         futures, futures_name = exchange_futures
         if futures:
             futures_pair = EXCHANGES[futures_name].get(
@@ -433,7 +611,7 @@ class TestCCXTExchange():
             assert (isinstance(contract_size, float) or isinstance(contract_size, int))
             assert contract_size >= 0.0
 
-    def test_ccxt_load_leverage_tiers(self, exchange_futures):
+    def test_ccxt_load_leverage_tiers(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         futures, futures_name = exchange_futures
         if futures and EXCHANGES[futures_name].get('leverage_tiers_public'):
             leverage_tiers = futures.load_leverage_tiers()
@@ -466,7 +644,7 @@ class TestCCXTExchange():
                 oldminNotional = tier['minNotional']
                 oldmaxNotional = tier['maxNotional']
 
-    def test_ccxt_dry_run_liquidation_price(self, exchange_futures):
+    def test_ccxt_dry_run_liquidation_price(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         futures, futures_name = exchange_futures
         if futures and EXCHANGES[futures_name].get('leverage_tiers_public'):
 
@@ -476,28 +654,30 @@ class TestCCXTExchange():
             )
 
             liquidation_price = futures.dry_run_liquidation_price(
-                futures_pair,
-                40000,
-                False,
-                100,
-                100,
-                100,
+                pair=futures_pair,
+                open_rate=40000,
+                is_short=False,
+                amount=100,
+                stake_amount=100,
+                leverage=5,
+                wallet_balance=100,
             )
             assert (isinstance(liquidation_price, float))
             assert liquidation_price >= 0.0
 
             liquidation_price = futures.dry_run_liquidation_price(
-                futures_pair,
-                40000,
-                False,
-                100,
-                100,
-                100,
+                pair=futures_pair,
+                open_rate=40000,
+                is_short=False,
+                amount=100,
+                stake_amount=100,
+                leverage=5,
+                wallet_balance=100,
             )
             assert (isinstance(liquidation_price, float))
             assert liquidation_price >= 0.0
 
-    def test_ccxt_get_max_pair_stake_amount(self, exchange_futures):
+    def test_ccxt_get_max_pair_stake_amount(self, exchange_futures: EXCHANGE_FIXTURE_TYPE):
         futures, futures_name = exchange_futures
         if futures:
             futures_pair = EXCHANGES[futures_name].get(

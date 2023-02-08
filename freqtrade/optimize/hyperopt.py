@@ -24,6 +24,7 @@ from pandas import DataFrame
 from freqtrade.constants import DATETIME_PRINT_FORMAT, FTHYPT_FILEVERSION, LAST_BT_RESULT_FN, Config
 from freqtrade.data.converter import trim_dataframes
 from freqtrade.data.history import get_timerange
+from freqtrade.data.metrics import calculate_market_change
 from freqtrade.enums import HyperoptState
 from freqtrade.exceptions import OperationalException
 from freqtrade.misc import deep_merge_dicts, file_dump_json, plural
@@ -73,6 +74,7 @@ class Hyperopt:
         self.roi_space: List[Dimension] = []
         self.stoploss_space: List[Dimension] = []
         self.trailing_space: List[Dimension] = []
+        self.max_open_trades_space: List[Dimension] = []
         self.dimensions: List[Dimension] = []
 
         self.config = config
@@ -111,16 +113,15 @@ class Hyperopt:
 
         self.clean_hyperopt()
 
+        self.market_change = 0.0
         self.num_epochs_saved = 0
         self.current_best_epoch: Optional[Dict[str, Any]] = None
 
         # Use max_open_trades for hyperopt as well, except --disable-max-market-positions is set
-        if self.config.get('use_max_market_positions', True):
-            self.max_open_trades = self.config['max_open_trades']
-        else:
+        if not self.config.get('use_max_market_positions', True):
             logger.debug('Ignoring max_open_trades (--disable-max-market-positions was used) ...')
-            self.max_open_trades = 0
-        self.position_stacking = self.config.get('position_stacking', False)
+            self.backtesting.strategy.max_open_trades = float('inf')
+            config.update({'max_open_trades': self.backtesting.strategy.max_open_trades})
 
         if HyperoptTools.has_space(self.config, 'sell'):
             # Make sure use_exit_signal is enabled
@@ -208,6 +209,10 @@ class Hyperopt:
             result['stoploss'] = {p.name: params.get(p.name) for p in self.stoploss_space}
         if HyperoptTools.has_space(self.config, 'trailing'):
             result['trailing'] = self.custom_hyperopt.generate_trailing_params(params)
+        if HyperoptTools.has_space(self.config, 'trades'):
+            result['max_open_trades'] = {
+                'max_open_trades': self.backtesting.strategy.max_open_trades
+                if self.backtesting.strategy.max_open_trades != float('inf') else -1}
 
         return result
 
@@ -228,6 +233,8 @@ class Hyperopt:
                 'trailing_stop_positive_offset': strategy.trailing_stop_positive_offset,
                 'trailing_only_offset_is_reached': strategy.trailing_only_offset_is_reached,
             }
+        if not HyperoptTools.has_space(self.config, 'trades'):
+            result['max_open_trades'] = {'max_open_trades': strategy.max_open_trades}
         return result
 
     def print_results(self, results) -> None:
@@ -256,6 +263,7 @@ class Hyperopt:
             logger.debug("Hyperopt has 'protection' space")
             # Enable Protections if protection space is selected.
             self.config['enable_protections'] = True
+            self.backtesting.enable_protections = True
             self.protection_space = self.custom_hyperopt.protection_space()
 
         if HyperoptTools.has_space(self.config, 'buy'):
@@ -278,8 +286,13 @@ class Hyperopt:
             logger.debug("Hyperopt has 'trailing' space")
             self.trailing_space = self.custom_hyperopt.trailing_space()
 
+        if HyperoptTools.has_space(self.config, 'trades'):
+            logger.debug("Hyperopt has 'trades' space")
+            self.max_open_trades_space = self.custom_hyperopt.max_open_trades_space()
+
         self.dimensions = (self.buy_space + self.sell_space + self.protection_space
-                           + self.roi_space + self.stoploss_space + self.trailing_space)
+                           + self.roi_space + self.stoploss_space + self.trailing_space
+                           + self.max_open_trades_space)
 
     def assign_params(self, params_dict: Dict, category: str) -> None:
         """
@@ -326,6 +339,20 @@ class Hyperopt:
             self.backtesting.strategy.trailing_only_offset_is_reached = \
                 d['trailing_only_offset_is_reached']
 
+        if HyperoptTools.has_space(self.config, 'trades'):
+            if self.config["stake_amount"] == "unlimited" and \
+                    (params_dict['max_open_trades'] == -1 or params_dict['max_open_trades'] == 0):
+                # Ignore unlimited max open trades if stake amount is unlimited
+                params_dict.update({'max_open_trades': self.config['max_open_trades']})
+
+            updated_max_open_trades = int(params_dict['max_open_trades']) \
+                if (params_dict['max_open_trades'] != -1
+                    and params_dict['max_open_trades'] != 0) else float('inf')
+
+            self.config.update({'max_open_trades': updated_max_open_trades})
+
+            self.backtesting.strategy.max_open_trades = updated_max_open_trades
+
         with self.data_pickle_file.open('rb') as f:
             processed = load(f, mmap_mode='r')
             if self.analyze_per_epoch:
@@ -335,10 +362,7 @@ class Hyperopt:
         bt_results = self.backtesting.backtest(
             processed=processed,
             start_date=self.min_date,
-            end_date=self.max_date,
-            max_open_trades=self.max_open_trades,
-            position_stacking=self.position_stacking,
-            enable_protections=self.config.get('enable_protections', False),
+            end_date=self.max_date
         )
         backtest_end_time = datetime.now(timezone.utc)
         bt_results.update({
@@ -357,7 +381,7 @@ class Hyperopt:
 
         strat_stats = generate_strategy_stats(
             self.pairlist, self.backtesting.strategy.get_strategy_name(),
-            backtesting_results, min_date, max_date, market_change=0
+            backtesting_results, min_date, max_date, market_change=self.market_change
         )
         results_explanation = HyperoptTools.format_results_explanation_string(
             strat_stats, self.config['stake_currency'])
@@ -425,6 +449,9 @@ class Hyperopt:
         # Trim startup period from analyzed dataframe to get correct dates for output.
         trimmed = trim_dataframes(preprocessed, self.timerange, self.backtesting.required_startup)
         self.min_date, self.max_date = get_timerange(trimmed)
+        if not self.market_change:
+            self.market_change = calculate_market_change(trimmed, 'close')
+
         # Real trimming will happen as part of backtesting.
         return preprocessed
 

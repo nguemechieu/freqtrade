@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from freqtrade import constants
-from freqtrade.configuration.check_exchange import check_exchange
 from freqtrade.configuration.deprecated_settings import process_temporary_deprecated_settings
 from freqtrade.configuration.directory_operations import create_datadir, create_userdata_dir
 from freqtrade.configuration.environment_vars import enironment_vars_to_dict
@@ -29,7 +28,7 @@ class Configuration:
     Reuse this class for the bot, backtesting, hyperopt and every script that required configuration
     """
 
-    def __init__(self, args: Dict[str, Any], runmode: RunMode = None) -> None:
+    def __init__(self, args: Dict[str, Any], runmode: Optional[RunMode] = None) -> None:
         self.args = args
         self.config: Optional[Config] = None
         self.runmode = runmode
@@ -99,6 +98,9 @@ class Configuration:
         self._process_analyze_options(config)
 
         self._process_freqai_options(config)
+
+        # Import check_exchange here to avoid import cycle problems
+        from freqtrade.exchange.check_exchange import check_exchange
 
         # Check if the exchange set by the user is supported
         check_exchange(config, config.get('experimental', {}).get('block_bad_exchanges', True))
@@ -276,6 +278,9 @@ class Configuration:
 
         self._args_to_config(config, argname='disableparamexport',
                              logstring='Parameter --disableparamexport detected: {} ...')
+
+        self._args_to_config(config, argname='freqai_backtest_live_models',
+                             logstring='Parameter --freqai-backtest-live-models detected ...')
 
         # Edge section:
         if 'stoploss_range' in self.args and self.args["stoploss_range"]:
@@ -456,6 +461,9 @@ class Configuration:
 
         self._args_to_config(config, argname='indicator_list',
                              logstring='Analysis indicator list: {}')
+
+        self._args_to_config(config, argname='timerange',
+                             logstring='Filter trades by timerange: {}')
 
     def _process_runmode(self, config: Config) -> None:
 

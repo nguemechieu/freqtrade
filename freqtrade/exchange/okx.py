@@ -78,7 +78,8 @@ class Okx(Exchange):
             raise DDosProtection(e) from e
         except (ccxt.NetworkError, ccxt.ExchangeError) as e:
             raise TemporaryError(
-                f'Could not set leverage due to {e.__class__.__name__}. Message: {e}') from e
+                f'Error in additional_exchange_init due to {e.__class__.__name__}. Message: {e}'
+                ) from e
         except ccxt.BaseError as e:
             raise OperationalException(e) from e
 
@@ -117,13 +118,15 @@ class Okx(Exchange):
         if self.trading_mode != TradingMode.SPOT and self.margin_mode is not None:
             try:
                 # TODO-lev: Test me properly (check mgnMode passed)
-                self._api.set_leverage(
+                res = self._api.set_leverage(
                     leverage=leverage,
                     symbol=pair,
                     params={
                         "mgnMode": self.margin_mode.value,
                         "posSide": self._get_posSide(side, False),
                     })
+                self._log_exchange_response('set_leverage', res)
+
             except ccxt.DDoSProtection as e:
                 raise DDosProtection(e) from e
             except (ccxt.NetworkError, ccxt.ExchangeError) as e:

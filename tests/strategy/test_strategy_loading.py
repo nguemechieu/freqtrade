@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pandas import DataFrame
 
+from freqtrade.configuration import Configuration
 from freqtrade.exceptions import OperationalException
 from freqtrade.resolvers import StrategyResolver
 from freqtrade.strategy.interface import IStrategy
@@ -32,24 +33,25 @@ def test_search_strategy():
 
 def test_search_all_strategies_no_failed():
     directory = Path(__file__).parent / "strats"
-    strategies = StrategyResolver.search_all_objects(directory, enum_failed=False)
+    strategies = StrategyResolver._search_all_objects(directory, enum_failed=False)
     assert isinstance(strategies, list)
-    assert len(strategies) == 9
+    assert len(strategies) == 12
     assert isinstance(strategies[0], dict)
 
 
 def test_search_all_strategies_with_failed():
     directory = Path(__file__).parent / "strats"
-    strategies = StrategyResolver.search_all_objects(directory, enum_failed=True)
+    strategies = StrategyResolver._search_all_objects(directory, enum_failed=True)
     assert isinstance(strategies, list)
-    assert len(strategies) == 10
+    assert len(strategies) == 13
     # with enum_failed=True search_all_objects() shall find 2 good strategies
     # and 1 which fails to load
-    assert len([x for x in strategies if x['class'] is not None]) == 9
+    assert len([x for x in strategies if x['class'] is not None]) == 12
+
     assert len([x for x in strategies if x['class'] is None]) == 1
 
     directory = Path(__file__).parent / "strats_nonexistingdir"
-    strategies = StrategyResolver.search_all_objects(directory, enum_failed=True)
+    strategies = StrategyResolver._search_all_objects(directory, enum_failed=True)
     assert len(strategies) == 0
 
 
@@ -77,10 +79,9 @@ def test_load_strategy_base64(dataframe_1m, caplog, default_conf):
 
 
 def test_load_strategy_invalid_directory(caplog, default_conf):
-    default_conf['strategy'] = 'StrategyTestV3'
     extra_dir = Path.cwd() / 'some/path'
-    with pytest.raises(OperationalException):
-        StrategyResolver._load_strategy(CURRENT_TEST_STRATEGY, config=default_conf,
+    with pytest.raises(OperationalException, match=r"Impossible to load Strategy.*"):
+        StrategyResolver._load_strategy('StrategyTestV333', config=default_conf,
                                         extra_dir=extra_dir)
 
     assert log_has_re(r'Path .*' + r'some.*path.*' + r'.* does not exist', caplog)
@@ -102,8 +103,8 @@ def test_load_strategy_noname(default_conf):
         StrategyResolver.load_strategy(default_conf)
 
 
-@pytest.mark.filterwarnings("ignore:deprecated")
-@pytest.mark.parametrize('strategy_name', ['StrategyTestV2'])
+@ pytest.mark.filterwarnings("ignore:deprecated")
+@ pytest.mark.parametrize('strategy_name', ['StrategyTestV2'])
 def test_strategy_pre_v3(dataframe_1m, default_conf, strategy_name):
     default_conf.update({'strategy': strategy_name})
 
@@ -173,6 +174,18 @@ def test_strategy_override_stoploss(caplog, default_conf):
 
     assert strategy.stoploss == -0.5
     assert log_has("Override strategy 'stoploss' with value in config file: -0.5.", caplog)
+
+
+def test_strategy_override_max_open_trades(caplog, default_conf):
+    caplog.set_level(logging.INFO)
+    default_conf.update({
+        'strategy': CURRENT_TEST_STRATEGY,
+        'max_open_trades': 7
+    })
+    strategy = StrategyResolver.load_strategy(default_conf)
+
+    assert strategy.max_open_trades == 7
+    assert log_has("Override strategy 'max_open_trades' with value in config file: 7.", caplog)
 
 
 def test_strategy_override_trailing_stop(caplog, default_conf):
@@ -349,7 +362,39 @@ def test_strategy_override_use_exit_profit_only(caplog, default_conf):
     assert log_has("Override strategy 'exit_profit_only' with value in config file: True.", caplog)
 
 
-@pytest.mark.filterwarnings("ignore:deprecated")
+def test_strategy_max_open_trades_infinity_from_strategy(caplog, default_conf):
+    caplog.set_level(logging.INFO)
+    default_conf.update({
+        'strategy': CURRENT_TEST_STRATEGY,
+    })
+    del default_conf['max_open_trades']
+
+    strategy = StrategyResolver.load_strategy(default_conf)
+
+    # this test assumes -1 set to 'max_open_trades' in CURRENT_TEST_STRATEGY
+    assert strategy.max_open_trades == float('inf')
+    assert default_conf['max_open_trades'] == float('inf')
+
+
+def test_strategy_max_open_trades_infinity_from_config(caplog, default_conf, mocker):
+    caplog.set_level(logging.INFO)
+    default_conf.update({
+        'strategy': CURRENT_TEST_STRATEGY,
+        'max_open_trades': -1,
+        'exchange': 'binance'
+    })
+
+    configuration = Configuration(args=default_conf)
+    parsed_config = configuration.get_config()
+
+    assert parsed_config['max_open_trades'] == float('inf')
+
+    strategy = StrategyResolver.load_strategy(parsed_config)
+
+    assert strategy.max_open_trades == float('inf')
+
+
+@ pytest.mark.filterwarnings("ignore:deprecated")
 def test_missing_implements(default_conf, caplog):
 
     default_location = Path(__file__).parent / "strats"
@@ -438,3 +483,19 @@ def test_strategy_interface_versioning(dataframe_1m, default_conf):
     assert isinstance(exitdf, DataFrame)
     assert 'sell' not in exitdf
     assert 'exit_long' in exitdf
+
+
+def test_strategy_ft_load_params_from_file(mocker, default_conf):
+    default_conf.update({'strategy': 'StrategyTestV2'})
+    del default_conf['max_open_trades']
+    mocker.patch('freqtrade.strategy.hyper.HyperStrategyMixin.load_params_from_file',
+                 return_value={
+                     'params': {
+                         'max_open_trades':  {
+                            'max_open_trades': -1
+                         }
+                         }
+                     })
+    strategy = StrategyResolver.load_strategy(default_conf)
+    assert strategy.max_open_trades == float('inf')
+    assert strategy.config['max_open_trades'] == float('inf')

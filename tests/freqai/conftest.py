@@ -27,17 +27,17 @@ def freqai_conf(default_conf, tmpdir):
             "timerange": "20180110-20180115",
             "freqai": {
                 "enabled": True,
-                "startup_candles": 10000,
                 "purge_old_models": True,
-                "train_period_days": 5,
-                "backtest_period_days": 2,
+                "train_period_days": 2,
+                "backtest_period_days": 10,
                 "live_retrain_hours": 0,
                 "expiration_hours": 1,
                 "identifier": "uniqe-id100",
                 "live_trained_timestamp": 0,
+                "data_kitchen_thread_count": 2,
                 "feature_parameters": {
                     "include_timeframes": ["5m"],
-                    "include_corr_pairlist": ["ADA/BTC", "DASH/BTC"],
+                    "include_corr_pairlist": ["ADA/BTC"],
                     "label_period_candles": 20,
                     "include_shifted_candles": 1,
                     "DI_threshold": 0.9,
@@ -47,7 +47,7 @@ def freqai_conf(default_conf, tmpdir):
                     "stratify_training_data": 0,
                     "indicator_periods_candles": [10],
                 },
-                "data_split_parameters": {"test_size": 0.33, "random_state": 1},
+                "data_split_parameters": {"test_size": 0.33, "shuffle": False},
                 "model_training_parameters": {"n_estimators": 100},
             },
             "config_files": [Path('config_examples', 'config_freqai.example.json')]
@@ -55,6 +55,30 @@ def freqai_conf(default_conf, tmpdir):
     )
     freqaiconf['exchange'].update({'pair_whitelist': ['ADA/BTC', 'DASH/BTC', 'ETH/BTC', 'LTC/BTC']})
     return freqaiconf
+
+
+def make_rl_config(conf):
+    conf.update({"strategy": "freqai_rl_test_strat"})
+    conf["freqai"].update({"model_training_parameters": {
+        "learning_rate": 0.00025,
+        "gamma": 0.9,
+        "verbose": 1
+    }})
+    conf["freqai"]["rl_config"] = {
+        "train_cycles": 1,
+        "thread_count": 2,
+        "max_trade_duration_candles": 300,
+        "model_type": "PPO",
+        "policy_type": "MlpPolicy",
+        "max_training_drawdown_pct": 0.5,
+        "net_arch": [32, 32],
+        "model_reward_parameters": {
+            "rr": 1,
+            "profit_aim": 0.02,
+            "win_reward_factor": 2
+        }}
+
+    return conf
 
 
 def get_patched_data_kitchen(mocker, freqaiconf):
@@ -106,6 +130,8 @@ def make_unfiltered_dataframe(mocker, freqai_conf):
     unfiltered_dataframe = freqai.dk.use_strategy_to_populate_indicators(
                 strategy, corr_dataframes, base_dataframes, freqai.dk.pair
             )
+    for i in range(5):
+        unfiltered_dataframe[f'constant_{i}'] = i
 
     unfiltered_dataframe = freqai.dk.slice_dataframe(new_timerange, unfiltered_dataframe)
 

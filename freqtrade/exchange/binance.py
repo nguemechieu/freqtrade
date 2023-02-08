@@ -11,6 +11,7 @@ from freqtrade.enums import CandleType, MarginMode, TradingMode
 from freqtrade.exceptions import DDosProtection, OperationalException, TemporaryError
 from freqtrade.exchange import Exchange
 from freqtrade.exchange.common import retrier
+from freqtrade.exchange.types import OHLCVResponse, Tickers
 from freqtrade.misc import deep_merge_dicts, json_load
 
 
@@ -27,11 +28,11 @@ class Binance(Exchange):
         "trades_pagination": "id",
         "trades_pagination_arg": "fromId",
         "l2_limit_range": [5, 10, 20, 50, 100, 500, 1000],
-        "ccxt_futures_name": "future"
     }
     _ft_has_futures: Dict = {
-        "stoploss_order_types": {"limit": "limit", "market": "market"},
+        "stoploss_order_types": {"limit": "stop", "market": "stop_market"},
         "tickers_have_price": False,
+        "floor_leverage": True,
     }
 
     _supported_trading_mode_margin_pairs: List[Tuple[TradingMode, MarginMode]] = [
@@ -41,25 +42,7 @@ class Binance(Exchange):
         (TradingMode.FUTURES, MarginMode.ISOLATED)
     ]
 
-    def stoploss_adjust(self, stop_loss: float, order: Dict, side: str) -> bool:
-        """
-        Verify stop_loss against stoploss-order value (limit or price)
-        Returns True if adjustment is necessary.
-        :param side: "buy" or "sell"
-        """
-        order_types = ('stop_loss_limit', 'stop', 'stop_market')
-
-        return (
-            order.get('stopPrice', None) is None
-            or (
-                order['type'] in order_types
-                and (
-                    (side == "sell" and stop_loss > float(order['stopPrice'])) or
-                    (side == "buy" and stop_loss < float(order['stopPrice']))
-                )
-            ))
-
-    def get_tickers(self, symbols: Optional[List[str]] = None, cached: bool = False) -> Dict:
+    def get_tickers(self, symbols: Optional[List[str]] = None, cached: bool = False) -> Tickers:
         tickers = super().get_tickers(symbols=symbols, cached=cached)
         if self.trading_mode == TradingMode.FUTURES:
             # Binance's future result has no bid/ask values.
@@ -69,28 +52,35 @@ class Binance(Exchange):
         return tickers
 
     @retrier
-    def _set_leverage(
-        self,
-        leverage: float,
-        pair: Optional[str] = None,
-        trading_mode: Optional[TradingMode] = None
-    ):
+    def additional_exchange_init(self) -> None:
         """
-        Set's the leverage before making a trade, in order to not
-        have the same leverage on every trade
+        Additional exchange initialization logic.
+        .api will be available at this point.
+        Must be overridden in child methods if required.
         """
-        trading_mode = trading_mode or self.trading_mode
-
-        if self._config['dry_run'] or trading_mode != TradingMode.FUTURES:
-            return
-
         try:
-            self._api.set_leverage(symbol=pair, leverage=round(leverage))
+            if self.trading_mode == TradingMode.FUTURES and not self._config['dry_run']:
+                position_side = self._api.fapiPrivateGetPositionsideDual()
+                self._log_exchange_response('position_side_setting', position_side)
+                assets_margin = self._api.fapiPrivateGetMultiAssetsMargin()
+                self._log_exchange_response('multi_asset_margin', assets_margin)
+                msg = ""
+                if position_side.get('dualSidePosition') is True:
+                    msg += (
+                        "\nHedge Mode is not supported by freqtrade. "
+                        "Please change 'Position Mode' on your binance futures account.")
+                if assets_margin.get('multiAssetsMargin') is True:
+                    msg += ("\nMulti-Asset Mode is not supported by freqtrade. "
+                            "Please change 'Asset Mode' on your binance futures account.")
+                if msg:
+                    raise OperationalException(msg)
         except ccxt.DDoSProtection as e:
             raise DDosProtection(e) from e
         except (ccxt.NetworkError, ccxt.ExchangeError) as e:
             raise TemporaryError(
-                f'Could not set leverage due to {e.__class__.__name__}. Message: {e}') from e
+                f'Error in additional_exchange_init due to {e.__class__.__name__}. Message: {e}'
+                ) from e
+
         except ccxt.BaseError as e:
             raise OperationalException(e) from e
 
@@ -98,7 +88,7 @@ class Binance(Exchange):
                                         since_ms: int, candle_type: CandleType,
                                         is_new_pair: bool = False, raise_: bool = False,
                                         until_ms: Optional[int] = None
-                                        ) -> Tuple[str, str, str, List]:
+                                        ) -> OHLCVResponse:
         """
         Overwrite to introduce "fast new pair" functionality by detecting the pair's listing date
         Does not work for other exchanges, which don't return the earliest data when called with "0"
@@ -136,6 +126,7 @@ class Binance(Exchange):
         is_short: bool,
         amount: float,
         stake_amount: float,
+        leverage: float,
         wallet_balance: float,  # Or margin balance
         mm_ex_1: float = 0.0,  # (Binance) Cross only
         upnl_ex_1: float = 0.0,  # (Binance) Cross only
@@ -145,11 +136,12 @@ class Binance(Exchange):
         MARGIN: https://www.binance.com/en/support/faq/f6b010588e55413aa58b7d63ee0125ed
         PERPETUAL: https://www.binance.com/en/support/faq/b3c689c1f50a44cabb3a84e663b81d93
 
-        :param exchange_name:
+        :param pair: Pair to calculate liquidation price for
         :param open_rate: Entry price of position
         :param is_short: True if the trade is a short, false otherwise
         :param amount: Absolute value of position size incl. leverage (in base currency)
         :param stake_amount: Stake amount - Collateral in settle currency.
+        :param leverage: Leverage used for this position.
         :param trading_mode: SPOT, MARGIN, FUTURES, etc.
         :param margin_mode: Either ISOLATED or CROSS
         :param wallet_balance: Amount of margin_mode in the wallet being used to trade

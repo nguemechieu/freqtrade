@@ -159,6 +159,7 @@ The stoploss price can only ever move upwards - if the stoploss value returned f
 
 The method must return a stoploss value (float / number) as a percentage of the current price.
 E.g. If the `current_rate` is 200 USD, then returning `0.02` will set the stoploss price 2% lower, at 196 USD.
+During backtesting, `current_rate` (and `current_profit`) are provided against the candle's high (or low for short trades) - while the resulting stoploss is evaluated against the candle's low (or high for short trades).
 
 The absolute value of the return value is used (the sign is ignored), so returning `0.05` or `-0.05` have the same result, a stoploss 5% below the current price.
 
@@ -643,7 +644,7 @@ This callback is **not** called when there is an open order (either buy or sell)
 
 Additional Buys are ignored once you have reached the maximum amount of extra buys that you have set on `max_entry_position_adjustment`, but the callback is called anyway looking for partial exits.
 
-Position adjustments will always be applied in the direction of the trade, so a positive value will always increase your position (negative values will decrease your position), no matter if it's a long or short trade. Modifications to leverage are not possible.
+Position adjustments will always be applied in the direction of the trade, so a positive value will always increase your position (negative values will decrease your position), no matter if it's a long or short trade. Modifications to leverage are not possible, and the stake-amount is assumed to be before applying leverage.
 
 !!! Note "About stake size"
     Using fixed stake size means it will be the amount used for the first order, just like without position adjustment.
@@ -658,6 +659,7 @@ Position adjustments will always be applied in the direction of the trade, so a 
 
 !!! Warning "Backtesting"
     During backtesting this callback is called for each candle in `timeframe` or `timeframe_detail`, so run-time performance will be affected.
+    This can also cause deviating results between live and backtesting, since backtesting can adjust the trade only once per candle, whereas live could adjust the trade multiple times per candle.
 
 ``` python
 from freqtrade.persistence import Trade
@@ -772,7 +774,7 @@ class DigDeeperStrategy(IStrategy):
     * Sell 100@10\$ -> Avg price: 8.5\$, realized profit 150\$, 17.65%
     * Buy 150@11\$ -> Avg price: 10\$, realized profit 150\$, 17.65%
     * Sell 100@12\$ -> Avg price: 10\$, total realized profit 350\$, 20%
-    * Sell 150@14\$ -> Avg price: 10\$, total realized profit 950\$, 40%
+    * Sell 150@14\$ -> Avg price: 10\$, total realized profit 950\$, 40%  <- *This will be the last "Exit" message*
 
     The total profit for this trade was 950$ on a 3350$ investment (`100@8$ + 100@9$ + 150@11$`). As such - the final relative profit is 28.35% (`950 / 3350`).
 
@@ -826,7 +828,7 @@ class AwesomeStrategy(IStrategy):
 
         """
         # Limit orders to use and follow SMA200 as price target for the first 10 minutes since entry trigger for BTC/USDT pair.
-        if pair == 'BTC/USDT' and entry_tag == 'long_sma200' and side == 'long' and (current_time - timedelta(minutes=10) > trade.open_date_utc:
+        if pair == 'BTC/USDT' and entry_tag == 'long_sma200' and side == 'long' and (current_time - timedelta(minutes=10)) > trade.open_date_utc:
             # just cancel the order if it has been filled more than half of the amount
             if order.filled > order.remaining:
                 return None

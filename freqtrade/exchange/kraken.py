@@ -12,6 +12,7 @@ from freqtrade.exceptions import (DDosProtection, InsufficientFundsError, Invali
                                   OperationalException, TemporaryError)
 from freqtrade.exchange import Exchange
 from freqtrade.exchange.common import retrier
+from freqtrade.exchange.types import Tickers
 
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class Kraken(Exchange):
         return (parent_check and
                 market.get('darkpool', False) is False)
 
-    def get_tickers(self, symbols: Optional[List[str]] = None, cached: bool = False) -> Dict:
+    def get_tickers(self, symbols: Optional[List[str]] = None, cached: bool = False) -> Tickers:
         # Only fetch tickers for current stake currency
         # Otherwise the request for kraken becomes too large.
         symbols = list(self.get_markets(quote_currencies=[self._config['stake_currency']]))
@@ -157,7 +158,8 @@ class Kraken(Exchange):
         self,
         leverage: float,
         pair: Optional[str] = None,
-        trading_mode: Optional[TradingMode] = None
+        trading_mode: Optional[TradingMode] = None,
+        accept_fail: bool = False,
     ):
         """
         Kraken set's the leverage as an option in the order object, so we need to
@@ -217,3 +219,19 @@ class Kraken(Exchange):
             fees = sum(df['open_fund'] * df['open_mark'] * amount * time_in_ratio)
 
         return fees if is_short else -fees
+
+    def _trades_contracts_to_amount(self, trades: List) -> List:
+        """
+        Fix "last" id issue for kraken data downloads
+        This whole override can probably be removed once the following
+        issue is closed in ccxt: https://github.com/ccxt/ccxt/issues/15827
+        """
+        super()._trades_contracts_to_amount(trades)
+        if (
+            len(trades) > 0
+            and isinstance(trades[-1].get('info'), list)
+            and len(trades[-1].get('info', [])) > 7
+        ):
+
+            trades[-1]['id'] = trades[-1].get('info', [])[-1]
+        return trades
