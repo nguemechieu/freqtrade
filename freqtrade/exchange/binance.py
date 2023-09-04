@@ -1,13 +1,12 @@
 """ Binance exchange subclass """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import arrow
 import ccxt
 
-from freqtrade.enums import CandleType, MarginMode, TradingMode
+from freqtrade.enums import CandleType, MarginMode, PriceType, TradingMode
 from freqtrade.exceptions import DDosProtection, OperationalException, TemporaryError
 from freqtrade.exchange import Exchange
 from freqtrade.exchange.common import retrier
@@ -23,7 +22,7 @@ class Binance(Exchange):
     _ft_has: Dict = {
         "stoploss_on_exchange": True,
         "stoploss_order_types": {"limit": "stop_loss_limit"},
-        "order_time_in_force": ['GTC', 'FOK', 'IOC'],
+        "order_time_in_force": ["GTC", "FOK", "IOC", "PO"],
         "ohlcv_candle_limit": 1000,
         "trades_pagination": "id",
         "trades_pagination_arg": "fromId",
@@ -31,8 +30,15 @@ class Binance(Exchange):
     }
     _ft_has_futures: Dict = {
         "stoploss_order_types": {"limit": "stop", "market": "stop_market"},
+        "order_time_in_force": ["GTC", "FOK", "IOC"],
         "tickers_have_price": False,
         "floor_leverage": True,
+        "stop_price_type_field": "workingType",
+        "order_props_in_contracts": ['amount', 'cost', 'filled', 'remaining'],
+        "stop_price_type_value_mapping": {
+            PriceType.LAST: "CONTRACT_PRICE",
+            PriceType.MARK: "MARK_PRICE",
+        },
     }
 
     _supported_trading_mode_margin_pairs: List[Tuple[TradingMode, MarginMode]] = [
@@ -60,7 +66,7 @@ class Binance(Exchange):
         """
         try:
             if self.trading_mode == TradingMode.FUTURES and not self._config['dry_run']:
-                position_side = self._api.fapiPrivateGetPositionsideDual()
+                position_side = self._api.fapiPrivateGetPositionSideDual()
                 self._log_exchange_response('position_side_setting', position_side)
                 assets_margin = self._api.fapiPrivateGetMultiAssetsMargin()
                 self._log_exchange_response('multi_asset_margin', assets_margin)
@@ -99,8 +105,9 @@ class Binance(Exchange):
             if x and x[3] and x[3][0] and x[3][0][0] > since_ms:
                 # Set starting date to first available candle.
                 since_ms = x[3][0][0]
-                logger.info(f"Candle-data for {pair} available starting with "
-                            f"{arrow.get(since_ms // 1000).isoformat()}.")
+                logger.info(
+                    f"Candle-data for {pair} available starting with "
+                    f"{datetime.fromtimestamp(since_ms // 1000, tz=timezone.utc).isoformat()}.")
 
         return await super()._async_get_historic_ohlcv(
             pair=pair,
@@ -190,7 +197,7 @@ class Binance(Exchange):
                 leverage_tiers_path = (
                     Path(__file__).parent / 'binance_leverage_tiers.json'
                 )
-                with open(leverage_tiers_path) as json_file:
+                with leverage_tiers_path.open() as json_file:
                     return json_load(json_file)
             else:
                 try:

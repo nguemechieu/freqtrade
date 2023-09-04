@@ -17,6 +17,10 @@ def get_webhook_dict() -> dict:
         "enabled": True,
         "url": "https://maker.ifttt.com/trigger/freqtrade_test/with/key/c764udvJ5jfSlswVRukZZ2/",
         "webhookentry": {
+            # Intentionally broken, as "entry" should have priority.
+            "value1": "Buying {pair55555}",
+        },
+        "entry": {
             "value1": "Buying {pair}",
             "value2": "limit {limit:8f}",
             "value3": "{stake_amount:8f} {stake_currency}",
@@ -89,15 +93,15 @@ def test_send_msg_webhook(default_conf, mocker):
     webhook.send_msg(msg=msg)
     assert msg_mock.call_count == 1
     assert (msg_mock.call_args[0][0]["value1"] ==
-            default_conf["webhook"]["webhookentry"]["value1"].format(**msg))
+            default_conf["webhook"]["entry"]["value1"].format(**msg))
     assert (msg_mock.call_args[0][0]["value2"] ==
-            default_conf["webhook"]["webhookentry"]["value2"].format(**msg))
+            default_conf["webhook"]["entry"]["value2"].format(**msg))
     assert (msg_mock.call_args[0][0]["value3"] ==
-            default_conf["webhook"]["webhookentry"]["value3"].format(**msg))
+            default_conf["webhook"]["entry"]["value3"].format(**msg))
     assert (msg_mock.call_args[0][0]["value4"] ==
-            default_conf["webhook"]["webhookentry"]["value4"].format(**msg))
+            default_conf["webhook"]["entry"]["value4"].format(**msg))
     assert (msg_mock.call_args[0][0]["value5"] ==
-            default_conf["webhook"]["webhookentry"]["value5"].format(**msg))
+            default_conf["webhook"]["entry"]["value5"].format(**msg))
     # Test short
     msg_mock.reset_mock()
 
@@ -116,15 +120,15 @@ def test_send_msg_webhook(default_conf, mocker):
     webhook.send_msg(msg=msg)
     assert msg_mock.call_count == 1
     assert (msg_mock.call_args[0][0]["value1"] ==
-            default_conf["webhook"]["webhookentry"]["value1"].format(**msg))
+            default_conf["webhook"]["entry"]["value1"].format(**msg))
     assert (msg_mock.call_args[0][0]["value2"] ==
-            default_conf["webhook"]["webhookentry"]["value2"].format(**msg))
+            default_conf["webhook"]["entry"]["value2"].format(**msg))
     assert (msg_mock.call_args[0][0]["value3"] ==
-            default_conf["webhook"]["webhookentry"]["value3"].format(**msg))
+            default_conf["webhook"]["entry"]["value3"].format(**msg))
     assert (msg_mock.call_args[0][0]["value4"] ==
-            default_conf["webhook"]["webhookentry"]["value4"].format(**msg))
+            default_conf["webhook"]["entry"]["value4"].format(**msg))
     assert (msg_mock.call_args[0][0]["value5"] ==
-            default_conf["webhook"]["webhookentry"]["value5"].format(**msg))
+            default_conf["webhook"]["entry"]["value5"].format(**msg))
     # Test buy cancel
     msg_mock.reset_mock()
 
@@ -328,6 +332,7 @@ def test_send_msg_webhook(default_conf, mocker):
 
 def test_exception_send_msg(default_conf, mocker, caplog):
     default_conf["webhook"] = get_webhook_dict()
+    del default_conf["webhook"]["entry"]
     del default_conf["webhook"]["webhookentry"]
 
     webhook = Webhook(RPC(get_patched_freqtradebot(mocker, default_conf)), default_conf)
@@ -356,6 +361,14 @@ def test_exception_send_msg(default_conf, mocker, caplog):
             }
         webhook.send_msg(msg)
 
+    # Test no failure for not implemented but known messagetypes
+    for e in RPCMessageType:
+        msg = {
+            'type': e,
+            'status': 'whatever'
+            }
+        webhook.send_msg(msg)
+
 
 def test__send_msg(default_conf, mocker, caplog):
     default_conf["webhook"] = get_webhook_dict()
@@ -368,7 +381,7 @@ def test__send_msg(default_conf, mocker, caplog):
     webhook._send_msg(msg)
 
     assert post.call_count == 1
-    assert post.call_args[1] == {'data': msg}
+    assert post.call_args[1] == {'data': msg, 'timeout': 10}
     assert post.call_args[0] == (default_conf['webhook']['url'], )
 
     post = MagicMock(side_effect=RequestException)
@@ -386,7 +399,7 @@ def test__send_msg_with_json_format(default_conf, mocker, caplog):
     mocker.patch("freqtrade.rpc.webhook.post", post)
     webhook._send_msg(msg)
 
-    assert post.call_args[1] == {'json': msg}
+    assert post.call_args[1] == {'json': msg, 'timeout': 10}
 
 
 def test__send_msg_with_raw_format(default_conf, mocker, caplog):
@@ -398,7 +411,11 @@ def test__send_msg_with_raw_format(default_conf, mocker, caplog):
     mocker.patch("freqtrade.rpc.webhook.post", post)
     webhook._send_msg(msg)
 
-    assert post.call_args[1] == {'data': msg['data'], 'headers': {'Content-Type': 'text/plain'}}
+    assert post.call_args[1] == {
+        'data': msg['data'],
+        'headers': {'Content-Type': 'text/plain'},
+        'timeout': 10
+    }
 
 
 def test_send_msg_discord(default_conf, mocker):

@@ -1,12 +1,13 @@
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import select
 
 from freqtrade.enums import ExitCheckTuple, ExitType, TradingMode
 from freqtrade.persistence import Trade
 from freqtrade.persistence.models import Order
 from freqtrade.rpc.rpc import RPC
-from tests.conftest import get_patched_freqtradebot, log_has_re, patch_get_signal
+from tests.conftest import EXMS, get_patched_freqtradebot, log_has_re, patch_get_signal
 
 
 def test_may_execute_exit_stoploss_on_exchange_multi(default_conf, ticker, fee,
@@ -34,7 +35,7 @@ def test_may_execute_exit_stoploss_on_exchange_multi(default_conf, ticker, fee,
         "type": "stop_loss_limit",
         "side": "sell",
         "price": 1.08801,
-        "amount": 90.99181074,
+        "amount": 91.07468123,
         "cost": 0.0,
         "average": 0.0,
         "filled": 0.0,
@@ -48,17 +49,18 @@ def test_may_execute_exit_stoploss_on_exchange_multi(default_conf, ticker, fee,
     stoploss_order_closed['filled'] = stoploss_order_closed['amount']
 
     # Sell first trade based on stoploss, keep 2nd and 3rd trade open
+    stop_orders = [stoploss_order_closed, stoploss_order_open, stoploss_order_open]
     stoploss_order_mock = MagicMock(
-        side_effect=[stoploss_order_closed, stoploss_order_open, stoploss_order_open])
+        side_effect=stop_orders)
     # Sell 3rd trade (not called for the first trade)
     should_sell_mock = MagicMock(side_effect=[
         [],
         [ExitCheckTuple(exit_type=ExitType.EXIT_SIGNAL)]]
     )
     cancel_order_mock = MagicMock()
-    mocker.patch('freqtrade.exchange.Binance.stoploss', stoploss)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
+        create_stoploss=stoploss,
         fetch_ticker=ticker,
         get_fee=fee,
         amount_to_precision=lambda s, x, y: y,
@@ -73,8 +75,9 @@ def test_may_execute_exit_stoploss_on_exchange_multi(default_conf, ticker, fee,
         _notify_exit=MagicMock(),
     )
     mocker.patch("freqtrade.strategy.interface.IStrategy.should_exit", should_sell_mock)
-    wallets_mock = mocker.patch("freqtrade.wallets.Wallets.update", MagicMock())
-    mocker.patch("freqtrade.wallets.Wallets.get_free", MagicMock(return_value=1000))
+    wallets_mock = mocker.patch("freqtrade.wallets.Wallets.update")
+    mocker.patch("freqtrade.wallets.Wallets.get_free", return_value=1000)
+    mocker.patch("freqtrade.wallets.Wallets.check_exit_amount", return_value=True)
 
     freqtrade = get_patched_freqtradebot(mocker, default_conf)
     freqtrade.strategy.order_types['stoploss_on_exchange'] = True
@@ -91,14 +94,15 @@ def test_may_execute_exit_stoploss_on_exchange_multi(default_conf, ticker, fee,
     assert freqtrade.strategy.confirm_trade_exit.call_count == 0
     wallets_mock.reset_mock()
 
-    trades = Trade.query.all()
-    # Make sure stoploss-order is open and trade is bought (since we mock update_trade_state)
-    for trade in trades:
-        stoploss_order_closed['id'] = '3'
-        oobj = Order.parse_from_ccxt_object(stoploss_order_closed, trade.pair, 'stoploss')
+    trades = Trade.session.scalars(select(Trade)).all()
+    # Make sure stoploss-order is open and trade is bought
+    for idx, trade in enumerate(trades):
+        stop_order = stop_orders[idx]
+        stop_order['id'] = f"stop{idx}"
+        oobj = Order.parse_from_ccxt_object(stop_order, trade.pair, 'stoploss')
 
         trade.orders.append(oobj)
-        trade.stoploss_order_id = '3'
+        trade.stoploss_order_id = f"stop{idx}"
         trade.open_order_id = None
 
     n = freqtrade.exit_positions(trades)
@@ -147,7 +151,7 @@ def test_forcebuy_last_unlimited(default_conf, ticker, fee, mocker, balance_rati
     default_conf['telegram']['enabled'] = True
     mocker.patch('freqtrade.rpc.telegram.Telegram', MagicMock())
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         fetch_ticker=ticker,
         get_fee=fee,
         amount_to_precision=lambda s, x, y: y,
@@ -179,13 +183,13 @@ def test_forcebuy_last_unlimited(default_conf, ticker, fee, mocker, balance_rati
     n = freqtrade.enter_positions()
     assert n == 4
 
-    trades = Trade.query.all()
+    trades = Trade.session.scalars(select(Trade)).all()
     assert len(trades) == 4
     assert freqtrade.wallets.get_trade_stake_amount('XRP/BTC') == result1
 
     rpc._rpc_force_entry('TKN/BTC', None)
 
-    trades = Trade.query.all()
+    trades = Trade.session.scalars(select(Trade)).all()
     assert len(trades) == 5
 
     for trade in trades:
@@ -217,7 +221,7 @@ def test_dca_buying(default_conf_usdt, ticker_usdt, fee, mocker) -> None:
 
     freqtrade = get_patched_freqtradebot(mocker, default_conf_usdt)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         fetch_ticker=ticker_usdt,
         get_fee=fee,
     )
@@ -239,7 +243,7 @@ def test_dca_buying(default_conf_usdt, ticker_usdt, fee, mocker) -> None:
     # Reduce bid amount
     ticker_usdt_modif = ticker_usdt.return_value
     ticker_usdt_modif['bid'] = ticker_usdt_modif['bid'] * 0.995
-    mocker.patch('freqtrade.exchange.Exchange.fetch_ticker', return_value=ticker_usdt_modif)
+    mocker.patch(f'{EXMS}.fetch_ticker', return_value=ticker_usdt_modif)
 
     # additional buy order
     freqtrade.process()
@@ -286,7 +290,7 @@ def test_dca_short(default_conf_usdt, ticker_usdt, fee, mocker) -> None:
 
     freqtrade = get_patched_freqtradebot(mocker, default_conf_usdt)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         fetch_ticker=ticker_usdt,
         get_fee=fee,
         amount_to_precision=lambda s, x, y: round(y, 4),
@@ -311,7 +315,7 @@ def test_dca_short(default_conf_usdt, ticker_usdt, fee, mocker) -> None:
     # Reduce bid amount
     ticker_usdt_modif = ticker_usdt.return_value
     ticker_usdt_modif['ask'] = ticker_usdt_modif['ask'] * 1.004
-    mocker.patch('freqtrade.exchange.Exchange.fetch_ticker', return_value=ticker_usdt_modif)
+    mocker.patch(f'{EXMS}.fetch_ticker', return_value=ticker_usdt_modif)
 
     # additional buy order
     freqtrade.process()
@@ -361,16 +365,16 @@ def test_dca_order_adjust(default_conf_usdt, ticker_usdt, leverage, fee, mocker)
 
     freqtrade = get_patched_freqtradebot(mocker, default_conf_usdt)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         fetch_ticker=ticker_usdt,
         get_fee=fee,
         amount_to_precision=lambda s, x, y: y,
         price_to_precision=lambda s, x, y: y,
     )
-    mocker.patch('freqtrade.exchange.Exchange._is_dry_limit_order_filled', return_value=False)
-    mocker.patch("freqtrade.exchange.Exchange.get_max_leverage", return_value=10)
-    mocker.patch("freqtrade.exchange.Exchange.get_funding_fees", return_value=0)
-    mocker.patch("freqtrade.exchange.Exchange.get_maintenance_ratio_and_amt", return_value=(0, 0))
+    mocker.patch(f'{EXMS}._dry_is_price_crossed', return_value=False)
+    mocker.patch(f"{EXMS}.get_max_leverage", return_value=10)
+    mocker.patch(f"{EXMS}.get_funding_fees", return_value=0)
+    mocker.patch(f"{EXMS}.get_maintenance_ratio_and_amt", return_value=(0, 0))
 
     patch_get_signal(freqtrade)
     freqtrade.strategy.custom_entry_price = lambda **kwargs: ticker_usdt['ask'] * 0.96
@@ -385,12 +389,12 @@ def test_dca_order_adjust(default_conf_usdt, ticker_usdt, leverage, fee, mocker)
     assert trade.open_order_id is not None
     assert pytest.approx(trade.stake_amount) == 60
     assert trade.open_rate == 1.96
-    assert trade.stop_loss_pct is None
-    assert trade.stop_loss == 0.0
+    assert trade.stop_loss_pct == -0.1
+    assert pytest.approx(trade.stop_loss) == trade.open_rate * (1 - 0.1 / leverage)
+    assert pytest.approx(trade.initial_stop_loss) == trade.open_rate * (1 - 0.1 / leverage)
+    assert trade.initial_stop_loss_pct == -0.1
     assert trade.leverage == leverage
     assert trade.stake_amount == 60
-    assert trade.initial_stop_loss == 0.0
-    assert trade.initial_stop_loss_pct is None
     # No adjustment
     freqtrade.process()
     trade = Trade.get_trades().first()
@@ -406,14 +410,14 @@ def test_dca_order_adjust(default_conf_usdt, ticker_usdt, leverage, fee, mocker)
     assert trade.open_order_id is not None
     # Open rate is not adjusted yet
     assert trade.open_rate == 1.96
-    assert trade.stop_loss_pct is None
-    assert trade.stop_loss == 0.0
+    assert trade.stop_loss_pct == -0.1
+    assert pytest.approx(trade.stop_loss) == trade.open_rate * (1 - 0.1 / leverage)
+    assert pytest.approx(trade.initial_stop_loss) == trade.open_rate * (1 - 0.1 / leverage)
     assert trade.stake_amount == 60
-    assert trade.initial_stop_loss == 0.0
-    assert trade.initial_stop_loss_pct is None
+    assert trade.initial_stop_loss_pct == -0.1
 
     # Fill order
-    mocker.patch('freqtrade.exchange.Exchange._is_dry_limit_order_filled', return_value=True)
+    mocker.patch(f'{EXMS}._dry_is_price_crossed', return_value=True)
     freqtrade.process()
     trade = Trade.get_trades().first()
     assert len(trade.orders) == 2
@@ -423,12 +427,13 @@ def test_dca_order_adjust(default_conf_usdt, ticker_usdt, leverage, fee, mocker)
     assert pytest.approx(trade.stake_amount) == 60
     assert trade.stop_loss_pct == -0.1
     assert pytest.approx(trade.stop_loss) == 1.99 * (1 - 0.1 / leverage)
-    assert pytest.approx(trade.initial_stop_loss) == 1.99 * (1 - 0.1 / leverage)
+    assert pytest.approx(trade.initial_stop_loss) == 1.96 * (1 - 0.1 / leverage)
     assert trade.initial_stop_loss_pct == -0.1
+    assert pytest.approx(trade.orders[-1].stake_amount) == trade.stake_amount
 
     # 2nd order - not filling
     freqtrade.strategy.adjust_trade_position = MagicMock(return_value=120)
-    mocker.patch('freqtrade.exchange.Exchange._is_dry_limit_order_filled', return_value=False)
+    mocker.patch(f'{EXMS}._dry_is_price_crossed', return_value=False)
 
     freqtrade.process()
     trade = Trade.get_trades().first()
@@ -452,7 +457,7 @@ def test_dca_order_adjust(default_conf_usdt, ticker_usdt, leverage, fee, mocker)
 
     # Fill DCA order
     freqtrade.strategy.adjust_trade_position = MagicMock(return_value=None)
-    mocker.patch('freqtrade.exchange.Exchange._is_dry_limit_order_filled', return_value=True)
+    mocker.patch(f'{EXMS}._dry_is_price_crossed', return_value=True)
     freqtrade.strategy.adjust_entry_price = MagicMock(side_effect=ValueError)
 
     freqtrade.process()
@@ -469,22 +474,120 @@ def test_dca_order_adjust(default_conf_usdt, ticker_usdt, leverage, fee, mocker)
     assert pytest.approx(trade.orders[1].amount) == 30.150753768 * leverage
     assert pytest.approx(trade.orders[-1].amount) == 61.538461232 * leverage
 
+    # Full exit
+    mocker.patch(f'{EXMS}._dry_is_price_crossed', return_value=False)
+    freqtrade.strategy.custom_exit = MagicMock(return_value='Exit now')
+    freqtrade.strategy.adjust_entry_price = MagicMock(return_value=2.02)
+    freqtrade.process()
+    trade = Trade.get_trades().first()
+    assert len(trade.orders) == 5
+    assert trade.orders[-1].side == trade.exit_side
+    assert trade.orders[-1].status == 'open'
+    assert trade.orders[-1].price == 2.02
+    assert pytest.approx(trade.amount) == 91.689215 * leverage
+    assert pytest.approx(trade.orders[-1].amount) == 91.689215 * leverage
+    assert freqtrade.strategy.adjust_entry_price.call_count == 0
+    # Process again, should not adjust entry price
+    freqtrade.process()
+    trade = Trade.get_trades().first()
+    assert len(trade.orders) == 5
+    assert trade.orders[-1].status == 'open'
+    assert trade.orders[-1].price == 2.02
+    # Adjust entry price cannot be called - this is an exit order
+    assert freqtrade.strategy.adjust_entry_price.call_count == 0
+
+
+@pytest.mark.parametrize('leverage', [1, 2])
+@pytest.mark.parametrize("is_short", [False, True])
+def test_dca_order_adjust_entry_replace_fails(
+    default_conf_usdt, ticker_usdt, fee, mocker, caplog, is_short, leverage
+) -> None:
+    spot = leverage == 1
+    if not spot:
+        default_conf_usdt['trading_mode'] = 'futures'
+        default_conf_usdt['margin_mode'] = 'isolated'
+    default_conf_usdt['position_adjustment_enable'] = True
+    default_conf_usdt['max_open_trades'] = 2
+    freqtrade = get_patched_freqtradebot(mocker, default_conf_usdt)
+    mocker.patch.multiple(
+        EXMS,
+        fetch_ticker=ticker_usdt,
+        get_fee=fee,
+        get_funding_fees=MagicMock(return_value=0),
+    )
+
+    # no order fills.
+    mocker.patch(f'{EXMS}._dry_is_price_crossed', side_effect=[False, True])
+    patch_get_signal(freqtrade, enter_short=is_short, enter_long=not is_short)
+    freqtrade.enter_positions()
+
+    trades = Trade.session.scalars(
+        select(Trade).filter(Trade.open_order_id.is_not(None))).all()
+    assert len(trades) == 1
+
+    mocker.patch(f'{EXMS}._dry_is_price_crossed', return_value=False)
+
+    # Timeout to not interfere
+    freqtrade.strategy.ft_check_timed_out = MagicMock(return_value=False)
+
+    # Create DCA order for 2nd trade (so we have 2 open orders on 2 trades)
+    # this 2nd order won't fill.
+
+    freqtrade.strategy.adjust_trade_position = MagicMock(return_value=20)
+
+    freqtrade.process()
+
+    assert freqtrade.strategy.adjust_trade_position.call_count == 1
+    trades = Trade.session.scalars(
+        select(Trade).filter(Trade.open_order_id.is_not(None))).all()
+    assert len(trades) == 2
+
+    # We now have 2 orders open
+    freqtrade.strategy.adjust_entry_price = MagicMock(return_value=2.05)
+    freqtrade.manage_open_orders()
+    trades = Trade.session.scalars(
+        select(Trade).filter(Trade.open_order_id.is_not(None))).all()
+    assert len(trades) == 2
+    assert len(Order.get_open_orders()) == 2
+    # Entry adjustment is called
+    assert freqtrade.strategy.adjust_entry_price.call_count == 2
+
+    # Attempt order replacement - fails.
+    freqtrade.strategy.adjust_entry_price = MagicMock(return_value=1234)
+
+    entry_mock = mocker.patch('freqtrade.freqtradebot.FreqtradeBot.execute_entry',
+                              return_value=False)
+    msg = r"Could not replace order for.*"
+    assert not log_has_re(msg, caplog)
+    freqtrade.manage_open_orders()
+
+    assert log_has_re(msg, caplog)
+    assert entry_mock.call_count == 2
+    assert len(Trade.get_trades().all()) == 1
+    assert len(Order.get_open_orders()) == 0
+
 
 @pytest.mark.parametrize('leverage', [1, 2])
 def test_dca_exiting(default_conf_usdt, ticker_usdt, fee, mocker, caplog, leverage) -> None:
     default_conf_usdt['position_adjustment_enable'] = True
-
+    spot = leverage == 1
+    if not spot:
+        default_conf_usdt['trading_mode'] = 'futures'
+        default_conf_usdt['margin_mode'] = 'isolated'
     freqtrade = get_patched_freqtradebot(mocker, default_conf_usdt)
-    freqtrade.trading_mode = TradingMode.FUTURES
+    assert freqtrade.trading_mode == TradingMode.FUTURES if not spot else TradingMode.SPOT
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         fetch_ticker=ticker_usdt,
         get_fee=fee,
         amount_to_precision=lambda s, x, y: y,
         price_to_precision=lambda s, x, y: y,
         get_min_pair_stake_amount=MagicMock(return_value=10),
+        get_funding_fees=MagicMock(return_value=0),
     )
-    mocker.patch("freqtrade.exchange.Exchange.get_max_leverage", return_value=10)
+    mocker.patch(f"{EXMS}.get_max_leverage", return_value=10)
+    starting_amount = freqtrade.wallets.get_total('USDT')
+    assert starting_amount == 1000
 
     patch_get_signal(freqtrade)
     freqtrade.strategy.leverage = MagicMock(return_value=leverage)
@@ -494,8 +597,14 @@ def test_dca_exiting(default_conf_usdt, ticker_usdt, fee, mocker, caplog, levera
     trade = Trade.get_trades().first()
     assert len(trade.orders) == 1
     assert pytest.approx(trade.stake_amount) == 60
+    assert trade.leverage == leverage
     assert pytest.approx(trade.amount) == 30.0 * leverage
     assert trade.open_rate == 2.0
+    assert pytest.approx(freqtrade.wallets.get_free('USDT')) == starting_amount - 60
+    if spot:
+        assert pytest.approx(freqtrade.wallets.get_total('USDT')) == starting_amount - 60
+    else:
+        assert freqtrade.wallets.get_total('USDT') == starting_amount
 
     # Too small size
     freqtrade.strategy.adjust_trade_position = MagicMock(return_value=-59)
@@ -517,6 +626,15 @@ def test_dca_exiting(default_conf_usdt, ticker_usdt, fee, mocker, caplog, levera
     assert pytest.approx(trade.amount) == 20.099 * leverage
     assert trade.open_rate == 2.0
     assert trade.is_open
+    assert trade.realized_profit > 0.098 * leverage
+    expected_profit = starting_amount - 40.1980 + trade.realized_profit
+    assert pytest.approx(freqtrade.wallets.get_free('USDT')) == expected_profit
+
+    if spot:
+        assert pytest.approx(freqtrade.wallets.get_total('USDT')) == expected_profit
+    else:
+        # total won't change in futures mode, only free / used will.
+        assert freqtrade.wallets.get_total('USDT') == starting_amount + trade.realized_profit
     caplog.clear()
 
     # Sell more than what we got (we got ~20 coins left)
@@ -532,8 +650,7 @@ def test_dca_exiting(default_conf_usdt, ticker_usdt, fee, mocker, caplog, levera
     assert trade.is_open
 
     # use amount that would trunc to 0.0 once selling
-    mocker.patch("freqtrade.exchange.Exchange.amount_to_contract_precision",
-                 lambda s, p, v: round(v, 1))
+    mocker.patch(f"{EXMS}.amount_to_contract_precision", lambda s, p, v: round(v, 1))
     freqtrade.strategy.adjust_trade_position = MagicMock(return_value=-0.01)
     freqtrade.process()
     trade = Trade.get_trades().first()
@@ -542,3 +659,10 @@ def test_dca_exiting(default_conf_usdt, ticker_usdt, fee, mocker, caplog, levera
     assert pytest.approx(trade.stake_amount) == 40.198
     assert trade.is_open
     assert log_has_re('Amount to exit is 0.0 due to exchange limits - not exiting.', caplog)
+    expected_profit = starting_amount - 40.1980 + trade.realized_profit
+    assert pytest.approx(freqtrade.wallets.get_free('USDT')) == expected_profit
+    if spot:
+        assert pytest.approx(freqtrade.wallets.get_total('USDT')) == expected_profit
+    else:
+        # total won't change in futures mode, only free / used will.
+        assert freqtrade.wallets.get_total('USDT') == starting_amount + trade.realized_profit

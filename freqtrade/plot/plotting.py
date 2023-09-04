@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -54,7 +55,7 @@ def init_plotscript(config, markets: List, startup_candles: int = 0):
         timeframe=config['timeframe'],
         timerange=timerange,
         startup_candles=startup_candles,
-        data_format=config.get('dataformat_ohlcv', 'json'),
+        data_format=config['dataformat_ohlcv'],
         candle_type=config.get('candle_type_def', CandleType.SPOT)
     )
 
@@ -83,7 +84,7 @@ def init_plotscript(config, markets: List, startup_candles: int = 0):
     except ValueError as e:
         raise OperationalException(e) from e
     if not trades.empty:
-        trades = trim_dataframe(trades, timerange, 'open_date')
+        trades = trim_dataframe(trades, timerange, df_date_col='open_date')
 
     return {"ohlcv": data,
             "trades": trades,
@@ -632,10 +633,10 @@ def load_and_plot_trades(config: Config):
     """
     strategy = StrategyResolver.load_strategy(config)
 
-    exchange = ExchangeResolver.load_exchange(config['exchange']['name'], config)
+    exchange = ExchangeResolver.load_exchange(config)
     IStrategy.dp = DataProvider(config, exchange)
     strategy.ft_bot_start()
-    strategy.bot_loop_start()
+    strategy.bot_loop_start(datetime.now(timezone.utc))
     plot_elements = init_plotscript(config, list(exchange.markets), strategy.startup_candle_count)
     timerange = plot_elements['timerange']
     trades = plot_elements['trades']
@@ -677,7 +678,7 @@ def plot_profit(config: Config) -> None:
     if 'timeframe' not in config:
         raise OperationalException('Timeframe must be set in either config or via --timeframe.')
 
-    exchange = ExchangeResolver.load_exchange(config['exchange']['name'], config)
+    exchange = ExchangeResolver.load_exchange(config)
     plot_elements = init_plotscript(config, list(exchange.markets))
     trades = plot_elements['trades']
     # Filter trades to relevant pairs

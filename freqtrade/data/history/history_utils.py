@@ -1,21 +1,25 @@
 import logging
 import operator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import arrow
 from pandas import DataFrame, concat
 
 from freqtrade.configuration import TimeRange
-from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS
+from freqtrade.constants import (DATETIME_PRINT_FORMAT, DEFAULT_DATAFRAME_COLUMNS,
+                                 DL_DATA_TIMEFRAMES, Config)
 from freqtrade.data.converter import (clean_ohlcv_dataframe, ohlcv_to_dataframe,
-                                      trades_remove_duplicates, trades_to_ohlcv)
+                                      trades_df_remove_duplicates, trades_list_to_df,
+                                      trades_to_ohlcv)
 from freqtrade.data.history.idatahandler import IDataHandler, get_datahandler
 from freqtrade.enums import CandleType
 from freqtrade.exceptions import OperationalException
 from freqtrade.exchange import Exchange
-from freqtrade.misc import format_ms_time
+from freqtrade.plugins.pairlist.pairlist_helpers import dynamic_expand_pairlist
+from freqtrade.util import dt_ts, format_ms_time
+from freqtrade.util.binance_mig import migrate_binance_futures_data
+from freqtrade.util.datetime_helpers import dt_now
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +71,7 @@ def load_data(datadir: Path,
               fill_up_missing: bool = True,
               startup_candles: int = 0,
               fail_without_data: bool = False,
-              data_format: str = 'json',
+              data_format: str = 'feather',
               candle_type: CandleType = CandleType.SPOT,
               user_futures_funding_rate: Optional[int] = None,
               ) -> Dict[str, DataFrame]:
@@ -228,16 +232,18 @@ def _download_pair_history(pair: str, *,
                     )
 
         logger.debug("Current Start: %s",
-                     f"{data.iloc[0]['date']:DATETIME_PRINT_FORMAT}" if not data.empty else 'None')
+                     f"{data.iloc[0]['date']:{DATETIME_PRINT_FORMAT}}"
+                     if not data.empty else 'None')
         logger.debug("Current End: %s",
-                     f"{data.iloc[-1]['date']:DATETIME_PRINT_FORMAT}" if not data.empty else 'None')
+                     f"{data.iloc[-1]['date']:{DATETIME_PRINT_FORMAT}}"
+                     if not data.empty else 'None')
 
         # Default since_ms to 30 days if nothing is given
         new_data = exchange.get_historic_ohlcv(pair=pair,
                                                timeframe=timeframe,
                                                since_ms=since_ms if since_ms else
-                                               arrow.utcnow().shift(
-                                                   days=-new_pairs_days).int_timestamp * 1000,
+                                               int((datetime.now() - timedelta(days=new_pairs_days)
+                                                    ).timestamp()) * 1000,
                                                is_new_pair=data.empty,
                                                candle_type=candle_type,
                                                until_ms=until_ms if until_ms else None
@@ -253,10 +259,12 @@ def _download_pair_history(pair: str, *,
             data = clean_ohlcv_dataframe(concat([data, new_dataframe], axis=0), timeframe, pair,
                                          fill_missing=False, drop_incomplete=False)
 
-        logger.debug("New  Start: %s",
-                     f"{data.iloc[0]['date']:DATETIME_PRINT_FORMAT}" if not data.empty else 'None')
+        logger.debug("New Start: %s",
+                     f"{data.iloc[0]['date']:{DATETIME_PRINT_FORMAT}}"
+                     if not data.empty else 'None')
         logger.debug("New End: %s",
-                     f"{data.iloc[-1]['date']:DATETIME_PRINT_FORMAT}" if not data.empty else 'None')
+                     f"{data.iloc[-1]['date']:{DATETIME_PRINT_FORMAT}}"
+                     if not data.empty else 'None')
 
         data_handler.ohlcv_store(pair, timeframe, data=data, candle_type=candle_type)
         return True
@@ -291,7 +299,7 @@ def refresh_backtest_ohlcv_data(exchange: Exchange, pairs: List[str], timeframes
             continue
         for timeframe in timeframes:
 
-            logger.info(f'Downloading pair {pair}, interval {timeframe}.')
+            logger.debug(f'Downloading pair {pair}, {candle_type}, interval {timeframe}.')
             process = f'{idx}/{len(pairs)}'
             _download_pair_history(pair=pair, process=process,
                                    datadir=datadir, exchange=exchange,
@@ -343,24 +351,27 @@ def _download_trades_history(exchange: Exchange,
         # DEFAULT_TRADES_COLUMNS: 0 -> timestamp
         # DEFAULT_TRADES_COLUMNS: 1 -> id
 
-        if trades and since < trades[0][0]:
+        if not trades.empty and since > 0 and since < trades.iloc[0]['timestamp']:
             # since is before the first trade
-            logger.info(f"Start earlier than available data. Redownloading trades for {pair}...")
-            trades = []
+            logger.info(f"Start ({trades.iloc[0]['date']:{DATETIME_PRINT_FORMAT}}) earlier than "
+                        f"available data. Redownloading trades for {pair}...")
+            trades = trades_list_to_df([])
 
-        if not since:
-            since = arrow.utcnow().shift(days=-new_pairs_days).int_timestamp * 1000
-
-        from_id = trades[-1][1] if trades else None
-        if trades and since < trades[-1][0]:
+        from_id = trades.iloc[-1]['id'] if not trades.empty else None
+        if not trades.empty and since < trades.iloc[-1]['timestamp']:
             # Reset since to the last available point
             # - 5 seconds (to ensure we're getting all trades)
-            since = trades[-1][0] - (5 * 1000)
+            since = trades.iloc[-1]['timestamp'] - (5 * 1000)
             logger.info(f"Using last trade date -5s - Downloading trades for {pair} "
                         f"since: {format_ms_time(since)}.")
 
-        logger.debug(f"Current Start: {format_ms_time(trades[0][0]) if trades else 'None'}")
-        logger.debug(f"Current End: {format_ms_time(trades[-1][0]) if trades else 'None'}")
+        if not since:
+            since = dt_ts(dt_now() - timedelta(days=new_pairs_days))
+
+        logger.debug("Current Start: %s", 'None' if trades.empty else
+                     f"{trades.iloc[0]['date']:{DATETIME_PRINT_FORMAT}}")
+        logger.debug("Current End: %s", 'None' if trades.empty else
+                     f"{trades.iloc[-1]['date']:{DATETIME_PRINT_FORMAT}}")
         logger.info(f"Current Amount of trades: {len(trades)}")
 
         # Default since_ms to 30 days if nothing is given
@@ -369,13 +380,16 @@ def _download_trades_history(exchange: Exchange,
                                                   until=until,
                                                   from_id=from_id,
                                                   )
-        trades.extend(new_trades[1])
+        new_trades_df = trades_list_to_df(new_trades[1])
+        trades = concat([trades, new_trades_df], axis=0)
         # Remove duplicates to make sure we're not storing data we don't need
-        trades = trades_remove_duplicates(trades)
+        trades = trades_df_remove_duplicates(trades)
         data_handler.trades_store(pair, data=trades)
 
-        logger.debug(f"New Start: {format_ms_time(trades[0][0])}")
-        logger.debug(f"New End: {format_ms_time(trades[-1][0])}")
+        logger.debug("New Start: %s", 'None' if trades.empty else
+                     f"{trades.iloc[0]['date']:{DATETIME_PRINT_FORMAT}}")
+        logger.debug("New End: %s", 'None' if trades.empty else
+                     f"{trades.iloc[-1]['date']:{DATETIME_PRINT_FORMAT}}")
         logger.info(f"New Amount of trades: {len(trades)}")
         return True
 
@@ -388,7 +402,7 @@ def _download_trades_history(exchange: Exchange,
 
 def refresh_backtest_trades_data(exchange: Exchange, pairs: List[str], datadir: Path,
                                  timerange: TimeRange, new_pairs_days: int = 30,
-                                 erase: bool = False, data_format: str = 'jsongz') -> List[str]:
+                                 erase: bool = False, data_format: str = 'feather') -> List[str]:
     """
     Refresh stored trades data for backtesting and hyperopt operations.
     Used by freqtrade download-data subcommand.
@@ -421,8 +435,8 @@ def convert_trades_to_ohlcv(
     datadir: Path,
     timerange: TimeRange,
     erase: bool = False,
-    data_format_ohlcv: str = 'json',
-    data_format_trades: str = 'jsongz',
+    data_format_ohlcv: str = 'feather',
+    data_format_trades: str = 'feather',
     candle_type: CandleType = CandleType.SPOT
 ) -> None:
     """
@@ -480,3 +494,79 @@ def validate_backtest_data(data: DataFrame, pair: str, min_date: datetime,
         logger.warning("%s has missing frames: expected %s, got %s, that's %s missing values",
                        pair, expected_frames, dflen, expected_frames - dflen)
     return found_missing
+
+
+def download_data_main(config: Config) -> None:
+
+    timerange = TimeRange()
+    if 'days' in config:
+        time_since = (datetime.now() - timedelta(days=config['days'])).strftime("%Y%m%d")
+        timerange = TimeRange.parse_timerange(f'{time_since}-')
+
+    if 'timerange' in config:
+        timerange = timerange.parse_timerange(config['timerange'])
+
+    # Remove stake-currency to skip checks which are not relevant for datadownload
+    config['stake_currency'] = ''
+
+    pairs_not_available: List[str] = []
+
+    # Init exchange
+    from freqtrade.resolvers.exchange_resolver import ExchangeResolver
+    exchange = ExchangeResolver.load_exchange(config, validate=False)
+    available_pairs = [
+        p for p in exchange.get_markets(
+            tradable_only=True, active_only=not config.get('include_inactive')
+            ).keys()
+    ]
+
+    expanded_pairs = dynamic_expand_pairlist(config, available_pairs)
+    if 'timeframes' not in config:
+        config['timeframes'] = DL_DATA_TIMEFRAMES
+
+    # Manual validations of relevant settings
+    if not config['exchange'].get('skip_pair_validation', False):
+        exchange.validate_pairs(expanded_pairs)
+    logger.info(f"About to download pairs: {expanded_pairs}, "
+                f"intervals: {config['timeframes']} to {config['datadir']}")
+
+    for timeframe in config['timeframes']:
+        exchange.validate_timeframes(timeframe)
+
+    # Start downloading
+    try:
+        if config.get('download_trades'):
+            if config.get('trading_mode') == 'futures':
+                raise OperationalException("Trade download not supported for futures.")
+            pairs_not_available = refresh_backtest_trades_data(
+                exchange, pairs=expanded_pairs, datadir=config['datadir'],
+                timerange=timerange, new_pairs_days=config['new_pairs_days'],
+                erase=bool(config.get('erase')), data_format=config['dataformat_trades'])
+
+            # Convert downloaded trade data to different timeframes
+            convert_trades_to_ohlcv(
+                pairs=expanded_pairs, timeframes=config['timeframes'],
+                datadir=config['datadir'], timerange=timerange, erase=bool(config.get('erase')),
+                data_format_ohlcv=config['dataformat_ohlcv'],
+                data_format_trades=config['dataformat_trades'],
+            )
+        else:
+            if not exchange.get_option('ohlcv_has_history', True):
+                raise OperationalException(
+                    f"Historic klines not available for {exchange.name}. "
+                    "Please use `--dl-trades` instead for this exchange "
+                    "(will unfortunately take a long time)."
+                    )
+            migrate_binance_futures_data(config)
+            pairs_not_available = refresh_backtest_ohlcv_data(
+                exchange, pairs=expanded_pairs, timeframes=config['timeframes'],
+                datadir=config['datadir'], timerange=timerange,
+                new_pairs_days=config['new_pairs_days'],
+                erase=bool(config.get('erase')), data_format=config['dataformat_ohlcv'],
+                trading_mode=config.get('trading_mode', 'spot'),
+                prepend=config.get('prepend_data', False)
+            )
+    finally:
+        if pairs_not_available:
+            logger.info(f"Pairs [{','.join(pairs_not_available)}] not available "
+                        f"on exchange {exchange.name}.")

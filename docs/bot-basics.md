@@ -7,15 +7,32 @@ This page provides you some basic concepts on how Freqtrade works and operates.
 * **Strategy**: Your trading strategy, telling the bot what to do.
 * **Trade**: Open position.
 * **Open Order**: Order which is currently placed on the exchange, and is not yet complete.
-* **Pair**: Tradable pair, usually in the format of Base/Quote (e.g. XRP/USDT).
+* **Pair**: Tradable pair, usually in the format of Base/Quote (e.g. `XRP/USDT` for spot, `XRP/USDT:USDT` for futures).
 * **Timeframe**: Candle length to use (e.g. `"5m"`, `"1h"`, ...).
 * **Indicators**: Technical indicators (SMA, EMA, RSI, ...).
 * **Limit order**: Limit orders which execute at the defined limit price or better.
 * **Market order**: Guaranteed to fill, may move price depending on the order size.
+* **Current Profit**: Currently pending (unrealized) profit for this trade. This is mainly used throughout the bot and UI.
+* **Realized Profit**: Already realized profit. Only relevant in combination with [partial exits](strategy-callbacks.md#adjust-trade-position) - which also explains the calculation logic for this.
+* **Total Profit**: Combined realized and unrealized profit. The relative number (%) is calculated against the total investment in this trade.
 
 ## Fee handling
 
 All profit calculations of Freqtrade include fees. For Backtesting / Hyperopt / Dry-run modes, the exchange default fee is used (lowest tier on the exchange). For live operations, fees are used as applied by the exchange (this includes BNB rebates etc.).
+
+## Pair naming
+
+Freqtrade follows the [ccxt naming convention](https://docs.ccxt.com/#/README?id=consistency-of-base-and-quote-currencies) for currencies.
+Using the wrong naming convention in the wrong market will usually result in the bot not recognizing the pair, usually resulting in errors like "this pair is not available".
+
+### Spot pair naming
+
+For spot pairs, naming will be `base/quote` (e.g. `ETH/USDT`).
+
+### Futures pair naming
+
+For futures pairs, naming will be `base/quote:settle` (e.g. `ETH/USDT:USDT`).
+
 
 ## Bot execution logic
 
@@ -57,10 +74,10 @@ This loop will be repeated again and again until the bot is stopped.
 
 * Load historic data for configured pairlist.
 * Calls `bot_start()` once.
-* Calls `bot_loop_start()` once.
 * Calculate indicators (calls `populate_indicators()` once per pair).
 * Calculate entry / exit signals (calls `populate_entry_trend()` and `populate_exit_trend()` once per pair).
 * Loops per candle simulating entry and exit points.
+  * Calls `bot_loop_start()` strategy callback.
   * Check for Order timeouts, either via the `unfilledtimeout` configuration, or via `check_entry_timeout()` / `check_exit_timeout()` strategy callbacks.
   * Calls `adjust_entry_price()` strategy callback for open entry orders.
   * Check for trade entry signals (`enter_long` / `enter_short` columns).

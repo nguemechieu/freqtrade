@@ -4,7 +4,7 @@ from typing import Optional
 from pandas import DataFrame, read_parquet, to_datetime
 
 from freqtrade.configuration import TimeRange
-from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS, TradeList
+from freqtrade.constants import DEFAULT_DATAFRAME_COLUMNS, DEFAULT_TRADES_COLUMNS, TradeList
 from freqtrade.enums import CandleType
 
 from .idatahandler import IDataHandler
@@ -62,10 +62,7 @@ class ParquetDataHandler(IDataHandler):
         pairdata.columns = self._columns
         pairdata = pairdata.astype(dtype={'open': 'float', 'high': 'float',
                                           'low': 'float', 'close': 'float', 'volume': 'float'})
-        pairdata['date'] = to_datetime(pairdata['date'],
-                                       unit='ms',
-                                       utc=True,
-                                       infer_datetime_format=True)
+        pairdata['date'] = to_datetime(pairdata['date'], unit='ms', utc=True)
         return pairdata
 
     def ohlcv_append(
@@ -84,25 +81,22 @@ class ParquetDataHandler(IDataHandler):
         """
         raise NotImplementedError()
 
-    def trades_store(self, pair: str, data: TradeList) -> None:
+    def _trades_store(self, pair: str, data: DataFrame) -> None:
         """
         Store trades data (list of Dicts) to file
         :param pair: Pair - used for filename
-        :param data: List of Lists containing trade data,
+        :param data: Dataframe containing trades
                      column sequence as in DEFAULT_TRADES_COLUMNS
         """
-        # filename = self._pair_trades_filename(self._datadir, pair)
+        filename = self._pair_trades_filename(self._datadir, pair)
+        self.create_dir_if_needed(filename)
+        data.reset_index(drop=True).to_parquet(filename)
 
-        raise NotImplementedError()
-        # array = pa.array(data)
-        # array
-        # feather.write_feather(data, filename)
-
-    def trades_append(self, pair: str, data: TradeList):
+    def trades_append(self, pair: str, data: DataFrame):
         """
         Append data to existing files
         :param pair: Pair - used for filename
-        :param data: List of Lists containing trade data,
+        :param data: Dataframe containing trades
                      column sequence as in DEFAULT_TRADES_COLUMNS
         """
         raise NotImplementedError()
@@ -115,14 +109,13 @@ class ParquetDataHandler(IDataHandler):
         :param timerange: Timerange to load trades for - currently not implemented
         :return: List of trades
         """
-        raise NotImplementedError()
-        # filename = self._pair_trades_filename(self._datadir, pair)
-        # tradesdata = misc.file_load_json(filename)
+        filename = self._pair_trades_filename(self._datadir, pair)
+        if not filename.exists():
+            return DataFrame(columns=DEFAULT_TRADES_COLUMNS)
 
-        # if not tradesdata:
-        #     return []
+        tradesdata = read_parquet(filename)
 
-        # return tradesdata
+        return tradesdata
 
     @classmethod
     def _get_file_extension(cls):

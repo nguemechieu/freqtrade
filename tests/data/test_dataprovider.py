@@ -8,7 +8,7 @@ from freqtrade.data.dataprovider import DataProvider
 from freqtrade.enums import CandleType, RunMode
 from freqtrade.exceptions import ExchangeError, OperationalException
 from freqtrade.plugins.pairlistmanager import PairListManager
-from tests.conftest import generate_test_data, get_patched_exchange
+from tests.conftest import EXMS, generate_test_data, get_patched_exchange
 
 
 @pytest.mark.parametrize('candle_type', [
@@ -63,9 +63,10 @@ def test_historic_ohlcv(mocker, default_conf, ohlcv_history):
 
 def test_historic_ohlcv_dataformat(mocker, default_conf, ohlcv_history):
     hdf5loadmock = MagicMock(return_value=ohlcv_history)
-    jsonloadmock = MagicMock(return_value=ohlcv_history)
+    featherloadmock = MagicMock(return_value=ohlcv_history)
     mocker.patch("freqtrade.data.history.hdf5datahandler.HDF5DataHandler._ohlcv_load", hdf5loadmock)
-    mocker.patch("freqtrade.data.history.jsondatahandler.JsonDataHandler._ohlcv_load", jsonloadmock)
+    mocker.patch("freqtrade.data.history.featherdatahandler.FeatherDataHandler._ohlcv_load",
+                 featherloadmock)
 
     default_conf["runmode"] = RunMode.BACKTEST
     exchange = get_patched_exchange(mocker, default_conf)
@@ -73,17 +74,17 @@ def test_historic_ohlcv_dataformat(mocker, default_conf, ohlcv_history):
     data = dp.historic_ohlcv("UNITTEST/BTC", "5m")
     assert isinstance(data, DataFrame)
     hdf5loadmock.assert_not_called()
-    jsonloadmock.assert_called_once()
+    featherloadmock.assert_called_once()
 
     # Switching to dataformat hdf5
     hdf5loadmock.reset_mock()
-    jsonloadmock.reset_mock()
+    featherloadmock.reset_mock()
     default_conf["dataformat_ohlcv"] = "hdf5"
     dp = DataProvider(default_conf, exchange)
     data = dp.historic_ohlcv("UNITTEST/BTC", "5m")
     assert isinstance(data, DataFrame)
     hdf5loadmock.assert_called_once()
-    jsonloadmock.assert_not_called()
+    featherloadmock.assert_not_called()
 
 
 @pytest.mark.parametrize('candle_type', [
@@ -128,9 +129,14 @@ def test_get_pair_dataframe(mocker, default_conf, ohlcv_history, candle_type):
     default_conf["runmode"] = RunMode.BACKTEST
     dp = DataProvider(default_conf, exchange)
     assert dp.runmode == RunMode.BACKTEST
-    assert isinstance(dp.get_pair_dataframe(
-        "UNITTEST/BTC", timeframe, candle_type=candle_type), DataFrame)
-    # assert dp.get_pair_dataframe("NONESENSE/AAA", timeframe).empty
+    df = dp.get_pair_dataframe("UNITTEST/BTC", timeframe, candle_type=candle_type)
+    assert isinstance(df, DataFrame)
+    assert len(df) == 3  # ohlcv_history mock has just 3 rows
+
+    dp._set_dataframe_max_date(ohlcv_history.iloc[-1]['date'])
+    df = dp.get_pair_dataframe("UNITTEST/BTC", timeframe, candle_type=candle_type)
+    assert isinstance(df, DataFrame)
+    assert len(df) == 2  # ohlcv_history is limited to 2 rows now
 
 
 def test_available_pairs(mocker, default_conf, ohlcv_history):
@@ -223,7 +229,7 @@ def test_emit_df(mocker, default_conf, ohlcv_history):
 
 def test_refresh(mocker, default_conf):
     refresh_mock = MagicMock()
-    mocker.patch("freqtrade.exchange.Exchange.refresh_latest_ohlcv", refresh_mock)
+    mocker.patch(f"{EXMS}.refresh_latest_ohlcv", refresh_mock)
 
     exchange = get_patched_exchange(mocker, default_conf, id="binance")
     timeframe = default_conf["timeframe"]
@@ -258,7 +264,7 @@ def test_orderbook(mocker, default_conf, order_book_l2):
     assert order_book_l2.call_args_list[0][0][0] == 'ETH/BTC'
     assert order_book_l2.call_args_list[0][0][1] >= 5
 
-    assert type(res) is dict
+    assert isinstance(res, dict)
     assert 'bids' in res
     assert 'asks' in res
 
@@ -271,7 +277,7 @@ def test_market(mocker, default_conf, markets):
     dp = DataProvider(default_conf, exchange)
     res = dp.market('ETH/BTC')
 
-    assert type(res) is dict
+    assert isinstance(res, dict)
     assert 'symbol' in res
     assert res['symbol'] == 'ETH/BTC'
 
@@ -281,16 +287,16 @@ def test_market(mocker, default_conf, markets):
 
 def test_ticker(mocker, default_conf, tickers):
     ticker_mock = MagicMock(return_value=tickers()['ETH/BTC'])
-    mocker.patch("freqtrade.exchange.Exchange.fetch_ticker", ticker_mock)
+    mocker.patch(f"{EXMS}.fetch_ticker", ticker_mock)
     exchange = get_patched_exchange(mocker, default_conf)
     dp = DataProvider(default_conf, exchange)
     res = dp.ticker('ETH/BTC')
-    assert type(res) is dict
+    assert isinstance(res, dict)
     assert 'symbol' in res
     assert res['symbol'] == 'ETH/BTC'
 
     ticker_mock = MagicMock(side_effect=ExchangeError('Pair not found'))
-    mocker.patch("freqtrade.exchange.Exchange.fetch_ticker", ticker_mock)
+    mocker.patch(f"{EXMS}.fetch_ticker", ticker_mock)
     exchange = get_patched_exchange(mocker, default_conf)
     dp = DataProvider(default_conf, exchange)
     res = dp.ticker('UNITTEST/BTC')
@@ -301,7 +307,7 @@ def test_current_whitelist(mocker, default_conf, tickers):
     # patch default conf to volumepairlist
     default_conf['pairlists'][0] = {'method': 'VolumePairList', "number_assets": 5}
 
-    mocker.patch.multiple('freqtrade.exchange.Exchange',
+    mocker.patch.multiple(EXMS,
                           exchange_has=MagicMock(return_value=True),
                           get_tickers=tickers)
     exchange = get_patched_exchange(mocker, default_conf)

@@ -24,7 +24,7 @@ This will spin up a local server (usually on port 8000) so you can see if everyt
 To configure a development environment, you can either use the provided [DevContainer](#devcontainer-setup), or use the `setup.sh` script and answer "y" when asked "Do you want to install dependencies for dev [y/N]? ".
 Alternatively (e.g. if your system is not supported by the setup.sh script), follow the manual installation process and run `pip3 install -e .[all]`.
 
-This will install all required tools for development, including `pytest`, `flake8`, `mypy`, and `coveralls`.
+This will install all required tools for development, including `pytest`, `ruff`, `mypy`, and `coveralls`.
 
 Then install the git hook scripts by running `pre-commit install`, so your changes will be verified locally before committing.
 This avoids a lot of waiting for CI already, as some basic formatting checks are done locally on your machine.
@@ -77,7 +77,7 @@ def test_method_to_test(caplog):
 
 ### Debug configuration
 
-To debug freqtrade, we recommend VSCode with the following launch configuration (located in `.vscode/launch.json`).
+To debug freqtrade, we recommend VSCode (with the Python extension) with the following launch configuration (located in `.vscode/launch.json`).
 Details will obviously vary between setups - but this should work to get you started.
 
 ``` json
@@ -101,6 +101,19 @@ Command line arguments can be added in the `"args"` array.
 This method can also be used to debug a strategy, by setting the breakpoints within the strategy.
 
 A similar setup can also be taken for Pycharm - using `freqtrade` as module name, and setting the command line arguments as "parameters".
+
+??? Tip "Correct venv usage"
+    When using a virtual environment (which you should), make sure that your Editor is using the correct virtual environment to avoid problems or "unknown import" errors.
+
+    #### Vscode
+
+    You can select the correct environment in VSCode with the command "Python: Select Interpreter" - which will show you environments the extension detected.
+    If your environment has not been detected, you can also pick a path manually.
+
+    #### Pycharm
+
+    In pycharm, you can select the appropriate Environment in the "Run/Debug Configurations" window.
+    ![Pycharm debug configuration](assets/pycharm_debug.png)
 
 !!! Note "Startup directory"
     This assumes that you have the repository checked out, and the editor is started at the repository root level (so setup.py is at the top level of your repository).
@@ -327,18 +340,18 @@ To check how the new exchange behaves, you can use the following snippet:
 
 ``` python
 import ccxt
-from datetime import datetime
+from datetime import datetime, timezone
 from freqtrade.data.converter import ohlcv_to_dataframe
-ct = ccxt.binance()
+ct = ccxt.binance()  # Use the exchange you're testing
 timeframe = "1d"
-pair = "XLM/BTC"  # Make sure to use a pair that exists on that exchange!
+pair = "BTC/USDT"  # Make sure to use a pair that exists on that exchange!
 raw = ct.fetch_ohlcv(pair, timeframe=timeframe)
 
 # convert to dataframe
 df1 = ohlcv_to_dataframe(raw, timeframe, pair=pair, drop_incomplete=False)
 
 print(df1.tail(1))
-print(datetime.utcnow())
+print(datetime.now(timezone.utc))
 ```
 
 ``` output
@@ -363,7 +376,7 @@ from pathlib import Path
 exchange = ccxt.binance({
     'apiKey': '<apikey>',
     'secret': '<secret>'
-    'options': {'defaultType': 'future'}
+    'options': {'defaultType': 'swap'}
     })
 _ = exchange.load_markets()
 
@@ -453,7 +466,13 @@ Once the PR against stable is merged (best right after merging):
 * Use the button "Draft a new release" in the Github UI (subsection releases).
 * Use the version-number specified as tag.
 * Use "stable" as reference (this step comes after the above PR is merged).
-* Use the above changelog as release comment (as codeblock)
+* Use the above changelog as release comment (as codeblock).
+* Use the below snippet for the new release
+
+??? Tip "Release template"
+    ````
+    --8<-- "includes/release_template.md"
+    ````
 
 ## Releases
 
