@@ -12,6 +12,8 @@ from freqtrade.exceptions import (DDosProtection, InsufficientFundsError, Invali
                                   OperationalException, TemporaryError)
 from freqtrade.exchange import Exchange
 from freqtrade.exchange.common import retrier
+from freqtrade.exchange.exchange_utils import ROUND_DOWN, ROUND_UP
+from freqtrade.exchange.types import Tickers
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,8 @@ class Kraken(Exchange):
     _params: Dict = {"trading_agreement": "agree"}
     _ft_has: Dict = {
         "stoploss_on_exchange": True,
+        "stop_price_param": "stopPrice",
+        "stop_price_prop": "stopPrice",
         "ohlcv_candle_limit": 720,
         "ohlcv_has_history": False,
         "trades_pagination": "id",
@@ -45,7 +49,7 @@ class Kraken(Exchange):
         return (parent_check and
                 market.get('darkpool', False) is False)
 
-    def get_tickers(self, symbols: Optional[List[str]] = None, cached: bool = False) -> Dict:
+    def get_tickers(self, symbols: Optional[List[str]] = None, cached: bool = False) -> Tickers:
         # Only fetch tickers for current stake currency
         # Otherwise the request for kraken becomes too large.
         symbols = list(self.get_markets(quote_currencies=[self._config['stake_currency']]))
@@ -96,8 +100,8 @@ class Kraken(Exchange):
                 ))
 
     @retrier(retries=0)
-    def stoploss(self, pair: str, amount: float, stop_price: float,
-                 order_types: Dict, side: BuySell, leverage: float) -> Dict:
+    def create_stoploss(self, pair: str, amount: float, stop_price: float,
+                        order_types: Dict, side: BuySell, leverage: float) -> Dict:
         """
         Creates a stoploss market order.
         Stoploss market orders is the only stoploss type supported by kraken.
@@ -108,6 +112,7 @@ class Kraken(Exchange):
         if self.trading_mode == TradingMode.FUTURES:
             params.update({'reduceOnly': True})
 
+        round_mode = ROUND_DOWN if side == 'buy' else ROUND_UP
         if order_types.get('stoploss', 'market') == 'limit':
             ordertype = "stop-loss-limit"
             limit_price_pct = order_types.get('stoploss_on_exchange_limit_ratio', 0.99)
@@ -115,11 +120,11 @@ class Kraken(Exchange):
                 limit_rate = stop_price * limit_price_pct
             else:
                 limit_rate = stop_price * (2 - limit_price_pct)
-            params['price2'] = self.price_to_precision(pair, limit_rate)
+            params['price2'] = self.price_to_precision(pair, limit_rate, rounding_mode=round_mode)
         else:
             ordertype = "stop-loss"
 
-        stop_price = self.price_to_precision(pair, stop_price)
+        stop_price = self.price_to_precision(pair, stop_price, rounding_mode=round_mode)
 
         if self._config['dry_run']:
             dry_order = self.create_dry_run_order(
@@ -157,7 +162,7 @@ class Kraken(Exchange):
         self,
         leverage: float,
         pair: Optional[str] = None,
-        trading_mode: Optional[TradingMode] = None
+        accept_fail: bool = False,
     ):
         """
         Kraken set's the leverage as an option in the order object, so we need to
@@ -171,7 +176,7 @@ class Kraken(Exchange):
         ordertype: str,
         leverage: float,
         reduceOnly: bool,
-        time_in_force: str = 'gtc'
+        time_in_force: str = 'GTC'
     ) -> Dict:
         params = super()._get_params(
             side=side,
@@ -190,7 +195,7 @@ class Kraken(Exchange):
         amount: float,
         is_short: bool,
         open_date: datetime,
-        close_date: Optional[datetime] = None,
+        close_date: datetime,
         time_in_ratio: Optional[float] = None
     ) -> float:
         """
@@ -217,3 +222,19 @@ class Kraken(Exchange):
             fees = sum(df['open_fund'] * df['open_mark'] * amount * time_in_ratio)
 
         return fees if is_short else -fees
+
+    def _trades_contracts_to_amount(self, trades: List) -> List:
+        """
+        Fix "last" id issue for kraken data downloads
+        This whole override can probably be removed once the following
+        issue is closed in ccxt: https://github.com/ccxt/ccxt/issues/15827
+        """
+        super()._trades_contracts_to_amount(trades)
+        if (
+            len(trades) > 0
+            and isinstance(trades[-1].get('info'), list)
+            and len(trades[-1].get('info', [])) > 7
+        ):
+
+            trades[-1]['id'] = trades[-1].get('info', [])[-1]
+        return trades

@@ -31,7 +31,7 @@ The docker-image includes hyperopt dependencies, no further action needed.
 ### Easy installation script (setup.sh) / Manual installation
 
 ```bash
-source .env/bin/activate
+source .venv/bin/activate
 pip install -r requirements-hyperopt.txt
 ```
 
@@ -40,7 +40,8 @@ pip install -r requirements-hyperopt.txt
 ```
 usage: freqtrade hyperopt [-h] [-v] [--logfile FILE] [-V] [-c PATH] [-d PATH]
                           [--userdir PATH] [-s NAME] [--strategy-path PATH]
-                          [--recursive-strategy-search] [-i TIMEFRAME]
+                          [--recursive-strategy-search] [--freqaimodel NAME]
+                          [--freqaimodel-path PATH] [-i TIMEFRAME]
                           [--timerange TIMERANGE]
                           [--data-format-ohlcv {json,jsongz,hdf5}]
                           [--max-open-trades INT]
@@ -49,11 +50,11 @@ usage: freqtrade hyperopt [-h] [-v] [--logfile FILE] [-V] [-c PATH] [-d PATH]
                           [--eps] [--dmmp] [--enable-protections]
                           [--dry-run-wallet DRY_RUN_WALLET]
                           [--timeframe-detail TIMEFRAME_DETAIL] [-e INT]
-                          [--spaces {all,buy,sell,roi,stoploss,trailing,protection,default} [{all,buy,sell,roi,stoploss,trailing,protection,default} ...]]
+                          [--spaces {all,buy,sell,roi,stoploss,trailing,protection,trades,default} [{all,buy,sell,roi,stoploss,trailing,protection,trades,default} ...]]
                           [--print-all] [--no-color] [--print-json] [-j JOBS]
                           [--random-state INT] [--min-trades INT]
                           [--hyperopt-loss NAME] [--disable-param-export]
-                          [--ignore-missing-spaces]
+                          [--ignore-missing-spaces] [--analyze-per-epoch]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -95,7 +96,7 @@ optional arguments:
                         Specify detail timeframe for backtesting (`1m`, `5m`,
                         `30m`, `1h`, `1d`).
   -e INT, --epochs INT  Specify number of epochs (default: 100).
-  --spaces {all,buy,sell,roi,stoploss,trailing,protection,default} [{all,buy,sell,roi,stoploss,trailing,protection,default} ...]
+  --spaces {all,buy,sell,roi,stoploss,trailing,protection,trades,default} [{all,buy,sell,roi,stoploss,trailing,protection,trades,default} ...]
                         Specify which parameters to hyperopt. Space-separated
                         list.
   --print-all           Print all results, not only the best ones.
@@ -129,6 +130,7 @@ optional arguments:
   --ignore-missing-spaces, --ignore-unparameterized-spaces
                         Suppress errors for any requested Hyperopt spaces that
                         do not contain any parameters.
+  --analyze-per-epoch   Run populate_indicators once per epoch.
 
 Common arguments:
   -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
@@ -154,6 +156,10 @@ Strategy arguments:
   --recursive-strategy-search
                         Recursively search for a strategy in the strategies
                         folder.
+  --freqaimodel NAME    Specify a custom freqaimodels.
+  --freqaimodel-path PATH
+                        Specify additional lookup path for freqaimodels.
+
 ```
 
 ### Hyperopt checklist
@@ -174,6 +180,7 @@ Rarely you may also need to create a [nested class](advanced-hyperopt.md#overrid
 * `generate_roi_table` - for custom ROI optimization (if you need the ranges for the values in the ROI table that differ from default or the number of entries (steps) in the ROI table which differs from the default 4 steps)
 * `stoploss_space` - for custom stoploss optimization (if you need the range for the stoploss parameter in the optimization hyperspace that differs from default)
 * `trailing_space` - for custom trailing stop optimization (if you need the ranges for the trailing stop parameters in the optimization hyperspace that differ from default)
+* `max_open_trades_space` - for custom max_open_trades optimization (if you need the ranges for the max_open_trades parameter in the optimization hyperspace that differ from default)
 
 !!! Tip "Quickly optimize ROI, stoploss and trailing stoploss"
     You can quickly optimize the spaces `roi`, `stoploss` and `trailing` without changing anything in your strategy.
@@ -185,7 +192,7 @@ Rarely you may also need to create a [nested class](advanced-hyperopt.md#overrid
 
 ### Hyperopt execution logic
 
-Hyperopt will first load your data into memory and will then run `populate_indicators()` once per Pair to generate all indicators.
+Hyperopt will first load your data into memory and will then run `populate_indicators()` once per Pair to generate all indicators, unless `--analyze-per-epoch` is specified.
 
 Hyperopt will then spawn into different processes (number of processors, or `-j <n>`), and run backtesting over and over again, changing the parameters that are part of the `--spaces` defined.
 
@@ -359,7 +366,7 @@ class MyAwesomeStrategy(IStrategy):
     timeframe = '15m'
     minimal_roi = {
         "0":  0.10
-    },
+    }
     # Define the parameter spaces
     buy_ema_short = IntParameter(3, 50, default=5)
     buy_ema_long = IntParameter(15, 200, default=50)
@@ -394,7 +401,7 @@ class MyAwesomeStrategy(IStrategy):
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-          conditions = []
+        conditions = []
         conditions.append(qtpylib.crossed_above(
                 dataframe[f'ema_long_{self.buy_ema_long.value}'], dataframe[f'ema_short_{self.buy_ema_short.value}']
             ))
@@ -426,9 +433,15 @@ While this strategy is most likely too simple to provide consistent profit, it s
     `range` property may also be used with `DecimalParameter` and `CategoricalParameter`. `RealParameter` does not provide this property due to infinite search space.
 
 ??? Hint "Performance tip"
-    By doing the calculation of all possible indicators in `populate_indicators()`, the calculation of the indicator happens only once for every parameter.  
-    While this may slow down the hyperopt startup speed, the overall performance will increase as the Hyperopt execution itself may pick the same value for multiple epochs (changing other values).
-    You should however try to use space ranges as small as possible. Every new column will require more memory, and every possibility hyperopt can try will increase the search space.
+    During normal hyperopting, indicators are calculated once and supplied to each epoch, linearly increasing RAM usage as a factor of increasing cores. As this also has performance implications, there are two alternatives to reduce RAM usage
+
+    * Move `ema_short` and `ema_long` calculations from `populate_indicators()` to `populate_entry_trend()`. Since `populate_entry_trend()` gonna be calculated every epochs, you don't need to use `.range` functionality.
+    * hyperopt provides `--analyze-per-epoch` which will move the execution of `populate_indicators()` to the epoch process, calculating a single value per parameter per epoch instead of using the `.range` functionality. In this case, `.range` functionality will only return the actually used value.
+
+    These alternatives will reduce RAM usage, but increase CPU usage. However, your hyperopting run will be less likely to fail due to Out Of Memory (OOM) issues.
+
+    Whether you are using `.range` functionality or the alternatives above, you should try to use space ranges as small as possible since this will improve CPU/RAM usage.
+
 
 ## Optimizing protections
 
@@ -636,6 +649,7 @@ Legal values are:
 * `roi`: just optimize the minimal profit table for your strategy
 * `stoploss`: search for the best stoploss value
 * `trailing`: search for the best trailing stop values
+* `trades`: search for the best max open trades values
 * `protection`: search for the best protection parameters (read the [protections section](#optimizing-protections) on how to properly define these)
 * `default`: `all` except `trailing` and `protection`
 * space-separated list of any of the above values for example `--spaces roi stoploss`
@@ -879,6 +893,7 @@ To combat these, you have multiple options:
 * Avoid using `--timeframe-detail` (this loads a lot of additional data into memory).
 * Reduce the number of parallel processes (`-j <n>`).
 * Increase the memory of your machine.
+* Use `--analyze-per-epoch` if you're using a lot of parameters with `.range` functionality.
 
 
 ## The objective has been evaluated at this point before.
@@ -908,5 +923,5 @@ Once the optimized strategy has been implemented into your strategy, you should 
 To achieve same the results (number of trades, their durations, profit, etc.) as during Hyperopt, please use the same configuration and parameters (timerange, timeframe, ...) used for hyperopt `--dmmp`/`--disable-max-market-positions` and `--eps`/`--enable-position-stacking` for Backtesting.
 
 Should results not match, please double-check to make sure you transferred all conditions correctly.
-Pay special care to the stoploss (and trailing stoploss) parameters, as these are often set in configuration files, which override changes to the strategy.
-You should also carefully review the log of your backtest to ensure that there were no parameters inadvertently set by the configuration (like `stoploss` or `trailing_stop`).
+Pay special care to the stoploss, max_open_trades and trailing stoploss parameters, as these are often set in configuration files, which override changes to the strategy.
+You should also carefully review the log of your backtest to ensure that there were no parameters inadvertently set by the configuration (like `stoploss`, `max_open_trades` or `trailing_stop`).
