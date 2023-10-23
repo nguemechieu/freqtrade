@@ -10,7 +10,8 @@ from freqtrade.enums import TradingMode
 from freqtrade.exceptions import DependencyException
 from freqtrade.persistence import LocalTrade, Order, Trade, init_db
 from freqtrade.util import dt_now
-from tests.conftest import create_mock_trades, create_mock_trades_with_leverage, log_has, log_has_re
+from tests.conftest import (create_mock_trades, create_mock_trades_usdt,
+                            create_mock_trades_with_leverage, log_has, log_has_re)
 
 
 spot, margin, futures = TradingMode.SPOT, TradingMode.MARGIN, TradingMode.FUTURES
@@ -457,15 +458,14 @@ def test_update_limit_order(fee, caplog, limit_buy_order_usdt, limit_sell_order_
         leverage=lev,
         trading_mode=trading_mode
     )
-    assert trade.open_order_id is None
+    assert not trade.has_open_orders
     assert trade.close_profit is None
     assert trade.close_date is None
 
-    trade.open_order_id = enter_order['id']
     oobj = Order.parse_from_ccxt_object(enter_order, 'ADA/USDT', entry_side)
     trade.orders.append(oobj)
     trade.update_trade(oobj)
-    assert trade.open_order_id is None
+    assert not trade.has_open_orders
     assert trade.open_rate == open_rate
     assert trade.close_profit is None
     assert trade.close_date is None
@@ -476,13 +476,12 @@ def test_update_limit_order(fee, caplog, limit_buy_order_usdt, limit_sell_order_
                       caplog)
 
     caplog.clear()
-    trade.open_order_id = enter_order['id']
     time_machine.move_to("2022-03-31 21:45:05 +00:00")
     oobj = Order.parse_from_ccxt_object(exit_order, 'ADA/USDT', exit_side)
     trade.orders.append(oobj)
     trade.update_trade(oobj)
 
-    assert trade.open_order_id is None
+    assert not trade.has_open_orders
     assert trade.close_rate == close_rate
     assert pytest.approx(trade.close_profit) == profit
     assert trade.close_date is not None
@@ -511,11 +510,10 @@ def test_update_market_order(market_buy_order_usdt, market_sell_order_usdt, fee,
         leverage=1.0,
     )
 
-    trade.open_order_id = 'mocked_market_buy'
     oobj = Order.parse_from_ccxt_object(market_buy_order_usdt, 'ADA/USDT', 'buy')
     trade.orders.append(oobj)
     trade.update_trade(oobj)
-    assert trade.open_order_id is None
+    assert not trade.has_open_orders
     assert trade.open_rate == 2.0
     assert trade.close_profit is None
     assert trade.close_date is None
@@ -526,11 +524,10 @@ def test_update_market_order(market_buy_order_usdt, market_sell_order_usdt, fee,
 
     caplog.clear()
     trade.is_open = True
-    trade.open_order_id = 'mocked_market_sell'
     oobj = Order.parse_from_ccxt_object(market_sell_order_usdt, 'ADA/USDT', 'sell')
     trade.orders.append(oobj)
     trade.update_trade(oobj)
-    assert trade.open_order_id is None
+    assert not trade.has_open_orders
     assert trade.close_rate == 2.2
     assert pytest.approx(trade.close_profit) == 0.094513715710723
     assert trade.close_date is not None
@@ -580,14 +577,13 @@ def test_calc_open_close_trade_price(
     )
     entry_order = limit_order[trade.entry_side]
     exit_order = limit_order[trade.exit_side]
-    trade.open_order_id = f'something-{is_short}-{lev}-{exchange}'
 
     oobj = Order.parse_from_ccxt_object(entry_order, 'ADA/USDT', trade.entry_side)
     oobj._trade_live = trade
     oobj.update_from_ccxt_object(entry_order)
     trade.update_trade(oobj)
 
-    trade.funding_fees = funding_fees
+    trade.funding_fee_running = funding_fees
 
     oobj = Order.parse_from_ccxt_object(exit_order, 'ADA/USDT', trade.exit_side)
     oobj._trade_live = trade
@@ -595,7 +591,9 @@ def test_calc_open_close_trade_price(
     trade.update_trade(oobj)
 
     assert trade.is_open is False
+    # Funding fees transfer from funding_fee_running to funding_Fees
     assert trade.funding_fees == funding_fees
+    assert trade.orders[-1].funding_fee == funding_fees
 
     assert pytest.approx(trade._calc_open_trade_value(trade.amount, trade.open_rate)) == open_value
     assert pytest.approx(trade.calc_close_trade_value(trade.close_rate)) == close_value
@@ -604,7 +602,9 @@ def test_calc_open_close_trade_price(
 
 
 @pytest.mark.usefixtures("init_persistence")
-def test_trade_close(fee):
+def test_trade_close(fee, time_machine):
+    time_machine.move_to("2022-09-01 05:00:00 +00:00", tick=False)
+
     trade = Trade(
         pair='ADA/USDT',
         stake_amount=60.0,
@@ -613,7 +613,7 @@ def test_trade_close(fee):
         is_open=True,
         fee_open=fee.return_value,
         fee_close=fee.return_value,
-        open_date=datetime.now(tz=timezone.utc) - timedelta(minutes=10),
+        open_date=dt_now() - timedelta(minutes=10),
         interest_rate=0.0005,
         exchange='binance',
         trading_mode=margin,
@@ -632,6 +632,7 @@ def test_trade_close(fee):
         status="closed",
         order_type="limit",
         side=trade.entry_side,
+        order_filled_date=trade.open_date,
     ))
     trade.orders.append(Order(
         ft_order_side=trade.exit_side,
@@ -646,6 +647,7 @@ def test_trade_close(fee):
         status="closed",
         order_type="limit",
         side=trade.exit_side,
+        order_filled_date=dt_now(),
          ))
     assert trade.close_profit is None
     assert trade.close_date is None
@@ -654,14 +656,15 @@ def test_trade_close(fee):
     assert trade.is_open is False
     assert pytest.approx(trade.close_profit) == 0.094513715
     assert trade.close_date is not None
+    assert trade.close_date_utc == dt_now()
 
-    new_date = datetime(2020, 2, 2, 15, 6, 1),
-    assert trade.close_date != new_date
+    new_date = dt_now() + timedelta(minutes=5)
+    assert trade.close_date_utc != new_date
     # Close should NOT update close_date if the trade has been closed already
     assert trade.is_open is False
     trade.close_date = new_date
     trade.close(2.2)
-    assert trade.close_date == new_date
+    assert trade.close_date_utc == new_date
 
 
 @pytest.mark.usefixtures("init_persistence")
@@ -678,7 +681,6 @@ def test_calc_close_trade_price_exception(limit_buy_order_usdt, fee):
         leverage=1.0,
     )
 
-    trade.open_order_id = 'something'
     oobj = Order.parse_from_ccxt_object(limit_buy_order_usdt, 'ADA/USDT', 'buy')
     trade.update_trade(oobj)
     assert trade.calc_close_trade_value(trade.close_rate) == 0.0
@@ -697,7 +699,7 @@ def test_update_open_order(limit_buy_order_usdt):
         trading_mode=margin
     )
 
-    assert trade.open_order_id is None
+    assert not trade.has_open_orders
     assert trade.close_profit is None
     assert trade.close_date is None
 
@@ -705,7 +707,7 @@ def test_update_open_order(limit_buy_order_usdt):
     oobj = Order.parse_from_ccxt_object(limit_buy_order_usdt, 'ADA/USDT', 'buy')
     trade.update_trade(oobj)
 
-    assert trade.open_order_id is None
+    assert not trade.has_open_orders
     assert trade.close_profit is None
     assert trade.close_date is None
 
@@ -778,7 +780,6 @@ def test_calc_open_trade_value(
         is_short=is_short,
         trading_mode=trading_mode
     )
-    trade.open_order_id = 'open_trade'
     oobj = Order.parse_from_ccxt_object(
         limit_buy_order_usdt, 'ADA/USDT', 'sell' if is_short else 'buy')
     trade.update_trade(oobj)  # Buy @ 2.0
@@ -833,7 +834,6 @@ def test_calc_close_trade_price(
         trading_mode=trading_mode,
         funding_fees=funding_fees
     )
-    trade.open_order_id = 'close_trade'
     assert round(trade.calc_close_trade_value(rate=close_rate), 8) == result
 
 
@@ -1152,13 +1152,29 @@ def test_calc_profit(
         leverage=lev,
         fee_open=0.0025,
         fee_close=fee_close,
+        max_stake_amount=60.0,
         trading_mode=trading_mode,
         funding_fees=funding_fees
     )
-    trade.open_order_id = 'something'
+
+    profit_res = trade.calculate_profit(close_rate)
+    assert pytest.approx(profit_res.profit_abs) == round(profit, 8)
+    assert pytest.approx(profit_res.profit_ratio) == round(profit_ratio, 8)
+    val = trade.open_trade_value * (profit_res.profit_ratio) / lev
+    assert pytest.approx(val) == profit_res.profit_abs
+
+    assert pytest.approx(profit_res.total_profit) == round(profit, 8)
+    # assert pytest.approx(profit_res.total_profit_ratio) == round(profit_ratio, 8)
 
     assert pytest.approx(trade.calc_profit(rate=close_rate)) == round(profit, 8)
     assert pytest.approx(trade.calc_profit_ratio(rate=close_rate)) == round(profit_ratio, 8)
+
+    profit_res2 = trade.calculate_profit(close_rate, trade.amount, trade.open_rate)
+    assert pytest.approx(profit_res2.profit_abs) == round(profit, 8)
+    assert pytest.approx(profit_res2.profit_ratio) == round(profit_ratio, 8)
+
+    assert pytest.approx(profit_res2.total_profit) == round(profit, 8)
+    # assert pytest.approx(profit_res2.total_profit_ratio) == round(profit_ratio, 8)
 
     assert pytest.approx(trade.calc_profit(close_rate, trade.amount,
                          trade.open_rate)) == round(profit, 8)
@@ -1335,6 +1351,24 @@ def test_get_open_lev(fee, use_db):
     Trade.use_db = True
 
 
+@pytest.mark.parametrize('is_short', [True, False])
+@pytest.mark.parametrize('use_db', [True, False])
+@pytest.mark.usefixtures("init_persistence")
+def test_get_open_orders(fee, is_short, use_db):
+    Trade.use_db = use_db
+    Trade.reset_trades()
+
+    create_mock_trades_usdt(fee, is_short, use_db)
+    # Trade.commit()
+    trade = Trade.get_trades_proxy(pair="XRP/USDT")[0]
+    # assert trade.id == 3
+    assert len(trade.orders) == 2
+    assert len(trade.open_orders) == 0
+    assert not trade.has_open_orders
+
+    Trade.use_db = True
+
+
 @pytest.mark.usefixtures("init_persistence")
 def test_to_json(fee):
 
@@ -1350,10 +1384,10 @@ def test_to_json(fee):
         open_rate=0.123,
         exchange='binance',
         enter_tag=None,
-        open_order_id='dry_run_buy_12345',
         precision_mode=1,
         amount_precision=8.0,
         price_precision=7.0,
+        contract_size=1,
     )
     result = trade.to_json()
     assert isinstance(result, dict)
@@ -1366,7 +1400,6 @@ def test_to_json(fee):
         'is_open': None,
         'open_date': trade.open_date.strftime(DATETIME_PRINT_FORMAT),
         'open_timestamp': int(trade.open_date.timestamp() * 1000),
-        'open_order_id': 'dry_run_buy_12345',
         'close_date': None,
         'close_timestamp': None,
         'open_rate': 0.123,
@@ -1420,7 +1453,9 @@ def test_to_json(fee):
         'amount_precision': 8.0,
         'price_precision': 7.0,
         'precision_mode': 1,
+        'contract_size': 1,
         'orders': [],
+        'has_open_orders': False,
     }
 
     # Simulate dry_run entries
@@ -1440,6 +1475,7 @@ def test_to_json(fee):
         precision_mode=2,
         amount_precision=7.0,
         price_precision=8.0,
+        contract_size=1
     )
     result = trade.to_json()
     assert isinstance(result, dict)
@@ -1488,7 +1524,6 @@ def test_to_json(fee):
         'is_open': None,
         'max_rate': None,
         'min_rate': None,
-        'open_order_id': None,
         'open_rate_requested': None,
         'open_trade_value': 12.33075,
         'exit_reason': None,
@@ -1506,7 +1541,9 @@ def test_to_json(fee):
         'amount_precision': 7.0,
         'price_precision': 8.0,
         'precision_mode': 2,
+        'contract_size': 1,
         'orders': [],
+        'has_open_orders': False,
     }
 
 
@@ -1897,11 +1934,15 @@ def test_get_best_pair_lev(fee):
 
 @pytest.mark.usefixtures("init_persistence")
 @pytest.mark.parametrize('is_short', [True, False])
-def test_get_exit_order_count(fee, is_short):
+def test_get_canceled_exit_order_count(fee, is_short):
 
     create_mock_trades(fee, is_short=is_short)
     trade = Trade.get_trades([Trade.pair == 'ETC/BTC']).first()
-    assert trade.get_exit_order_count() == 1
+    # No canceled order.
+    assert trade.get_canceled_exit_order_count() == 0
+
+    trade.orders[-1].status = 'canceled'
+    assert trade.get_canceled_exit_order_count() == 1
 
 
 @pytest.mark.usefixtures("init_persistence")
@@ -2049,18 +2090,16 @@ def test_Trade_object_idem():
         'total_open_trades_stakes',
         'get_closed_trades_without_assigned_fees',
         'get_open_trades_without_assigned_fees',
-        'get_open_order_trades',
         'get_trades',
         'get_trades_query',
         'get_exit_reason_performance',
         'get_enter_tag_performance',
         'get_mix_tag_performance',
         'get_trading_volume',
-        'from_json',
         'validate_string_len',
     )
     EXCLUDES2 = ('trades', 'trades_open', 'bt_trades_open_pp', 'bt_open_open_trade_count',
-                 'total_profit')
+                 'total_profit', 'from_json',)
 
     # Parent (LocalTrade) should have the same attributes
     for item in trade:
@@ -2659,7 +2698,7 @@ def test_recalc_trade_from_orders_dca(data) -> None:
         assert len(trade.orders) == idx + 1
         if idx < len(data) - 1:
             assert trade.is_open is True
-        assert trade.open_order_id is None
+        assert not trade.has_open_orders
         assert trade.amount == result[0]
         assert trade.open_rate == result[1]
         assert trade.stake_amount == result[2]
@@ -2673,4 +2712,4 @@ def test_recalc_trade_from_orders_dca(data) -> None:
     assert not trade.is_open
     trade = Trade.session.scalars(select(Trade)).first()
     assert trade
-    assert trade.open_order_id is None
+    assert not trade.has_open_orders

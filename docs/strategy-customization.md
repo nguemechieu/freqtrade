@@ -168,10 +168,12 @@ Most indicators have an instable startup period, in which they are either not av
 To account for this, the strategy can be assigned the `startup_candle_count` attribute.
 This should be set to the maximum number of candles that the strategy requires to calculate stable indicators. In the case where a user includes higher timeframes with informative pairs, the `startup_candle_count` does not necessarily change. The value is the maximum period (in candles) that any of the informatives timeframes need to compute stable indicators.
 
-In this example strategy, this should be set to 100 (`startup_candle_count = 100`), since the longest needed history is 100 candles.
+You can use [recursive-analysis](recursive-analysis.md) to check and find the correct `startup_candle_count` to be used.
+
+In this example strategy, this should be set to 400 (`startup_candle_count = 400`), since the minimum needed history for ema100 calculation to make sure the value is correct is 400 candles.
 
 ``` python
-    dataframe['ema100'] = ta.EMA(dataframe, timeperiod=100)
+    dataframe['ema100'] = ta.EMA(dataframe, timeperiod=400)
 ```
 
 By letting the bot know how much history is needed, backtest trades can start at the specified timerange during backtesting and hyperopt.
@@ -193,11 +195,11 @@ Let's try to backtest 1 month (January 2019) of 5m candles using an example stra
 freqtrade backtesting --timerange 20190101-20190201 --timeframe 5m
 ```
 
-Assuming `startup_candle_count` is set to 100, backtesting knows it needs 100 candles to generate valid buy signals. It will load data from `20190101 - (100 * 5m)` - which is ~2018-12-31 15:30:00.
+Assuming `startup_candle_count` is set to 400, backtesting knows it needs 400 candles to generate valid buy signals. It will load data from `20190101 - (400 * 5m)` - which is ~2018-12-30 11:40:00.
 If this data is available, indicators will be calculated with this extended timerange. The instable startup period (up to 2019-01-01 00:00:00) will then be removed before starting backtesting.
 
 !!! Note
-    If data for the startup period is not available, then the timerange will be adjusted to account for this startup period - so Backtesting would start at 2019-01-01 08:30:00.
+    If data for the startup period is not available, then the timerange will be adjusted to account for this startup period - so Backtesting would start at 2019-01-02 09:20:00.
 
 ### Entry signal rules
 
@@ -264,7 +266,7 @@ def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFram
 ### Exit signal rules
 
 Edit the method `populate_exit_trend()` into your strategy file to update your exit strategy.
-The exit-signal is only used for exits if `use_exit_signal` is set to true in the configuration.
+The exit-signal can be suppressed by setting `use_exit_signal` to false in the configuration or strategy.
 `use_exit_signal` will not influence [signal collision rules](#colliding-signals) - which will still apply and can prevent entries.
 
 It's important to always return the dataframe without removing/modifying the columns `"open", "high", "low", "close", "volume"`, otherwise these fields would contain something unexpected.
