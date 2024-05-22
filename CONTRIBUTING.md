@@ -48,7 +48,7 @@ pytest tests/test_<file_name>.py::test_<method_name>
 #### Run Ruff
 
 ```bash
-ruff .
+ruff check .
 ```
 
 We receive a lot of code that fails the `ruff` checks.
@@ -72,12 +72,12 @@ you can manually run pre-commit with `pre-commit run -a`.
 mypy freqtrade
 ```
 
-### 4. Ensure all imports are correct
+### 4. Ensure formatting is correct
 
-#### Run isort
+#### Run ruff
 
 ``` bash
-isort .
+ruff format .
 ```
 
 ## (Core)-Committer Guide
@@ -125,7 +125,7 @@ Exceptions:
 
 Contributors may be given commit privileges. Preference will be given to those with:
 
-1. Past contributions to Freqtrade and other related open-source projects. Contributions to Freqtrade include both code (both accepted and pending) and friendly participation in the issue tracker and Pull request reviews. Quantity and quality are considered.
+1. Past contributions to Freqtrade and other related open-source projects. Contributions to Freqtrade include both code (both accepted and pending) and friendly participation in the issue tracker and Pull request reviews. Both quantity and quality are considered.
 1. A coding style that the other core committers find simple, minimal, and clean.
 1. Access to resources for cross-platform development and testing.
 1. Time to devote to the project regularly.
